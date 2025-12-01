@@ -11,8 +11,6 @@
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-    <!-- Excel出力用ライブラリ (SheetJS) -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
 
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@700&display=swap');
@@ -22,7 +20,6 @@
       .border-black { border-color: #000 !important; }
       .bg-label { background-color: #e5e7eb; }
       
-      /* 文字サイズ調整 */
       .text-base-plus { font-size: 1.1rem; }
       .text-sm-plus { font-size: 0.95rem; }
       .text-xs-plus { font-size: 0.85rem; }
@@ -40,10 +37,16 @@
         @page { size: A4; margin: 10mm; }
         body { background: white; -webkit-print-color-adjust: exact; }
         #debug-log { display: none !important; }
-        
         input, select, textarea { border-bottom: none !important; }
       }
       .writing-vertical-lr { writing-mode: vertical-lr; }
+      
+      .fade-out { animation: fadeOut 2s forwards; }
+      @keyframes fadeOut {
+        0% { opacity: 1; }
+        70% { opacity: 1; }
+        100% { opacity: 0; }
+      }
     </style>
   </head>
   <body>
@@ -59,12 +62,10 @@
     </div>
     <div id="debug-log"></div>
 
-    <!-- 入力補完用リスト -->
     <datalist id="closing-dates"><option value="10日"/><option value="20日"/><option value="末日"/></datalist>
     <datalist id="payment-dates"><option value="当月末"/><option value="翌月10日"/><option value="翌月20日"/><option value="翌月末"/><option value="翌々月10日"/></datalist>
     <datalist id="payment-methods"><option value="現金"/><option value="振込"/><option value="手形"/><option value="小切手"/><option value="電債"/></datalist>
     
-    <!-- 技術課依頼書の選択肢 (画像に合わせて更新) -->
     <datalist id="tech-requests">
       <option value="機械器具設置" />
       <option value="電気通信" />
@@ -74,27 +75,33 @@
     </datalist>
 
     <script type="text/babel" data-presets="react,typescript">
-      const { useState, useEffect, useMemo } = React;
+      const { useState, useEffect, useMemo, useRef } = React;
 
       // Icons
       const IconWrapper = ({ children, className }) => (
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{children}</svg>
       );
-      const ArrowLeft = ({ className }) => <IconWrapper className={className}><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></IconWrapper>;
       const Printer = ({ className }) => <IconWrapper className={className}><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></IconWrapper>;
       const Save = ({ className }) => <IconWrapper className={className}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></IconWrapper>;
       const FileSpreadsheet = ({ className }) => <IconWrapper className={className}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="M14 13h2"/><path d="M14 17h2"/></IconWrapper>;
       const Copy = ({ className }) => <IconWrapper className={className}><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></IconWrapper>;
-      const Link = ({ className }) => <IconWrapper className={className}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></IconWrapper>;
       const Plus = ({ className }) => <IconWrapper className={className}><path d="M5 12h14"/><path d="M12 5v14"/></IconWrapper>;
       const Trash2 = ({ className }) => <IconWrapper className={className}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></IconWrapper>;
+      const Calculator = ({ className }) => <IconWrapper className={className}><rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></IconWrapper>;
+      const CloudCheck = ({ className }) => <IconWrapper className={className}><path d="M19 16.9A5 5 0 0 0 18 7h-1.26a8 8 0 1 0-11.62 9"/><polyline points="9 11 12 14 22 4"/></IconWrapper>;
+      const Loader = ({ className }) => <IconWrapper className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></IconWrapper>;
+      const Mail = ({ className }) => <IconWrapper className={className}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></IconWrapper>;
 
-      // GASパラメータ安全受け取り
+      // GASパラメータ安全受け取り & クリーニング
       let INITIAL_ORDER_NO = "";
       let INITIAL_SUMMARY_CODE = "";
+      const cleanParam = (val) => String(val).replace(/^["']+|["']+$/g, '');
+
       try {
         INITIAL_ORDER_NO = <?= JSON.stringify(initialOrderNo) ?> || "";
         INITIAL_SUMMARY_CODE = <?= JSON.stringify(initialSummaryCode) ?> || "";
+        INITIAL_ORDER_NO = cleanParam(INITIAL_ORDER_NO);
+        INITIAL_SUMMARY_CODE = cleanParam(INITIAL_SUMMARY_CODE);
       } catch (e) {
         console.error("Param Error", e);
       }
@@ -109,6 +116,8 @@
         const [remarks, setRemarks] = useState([]);
         const [totals, setTotals] = useState({ subtotal: 0, tax: 0, total: 0 });
 
+        const [saveStatus, setSaveStatus] = useState('idle');
+
         useEffect(() => {
           loadData(INITIAL_ORDER_NO, INITIAL_SUMMARY_CODE);
         }, []);
@@ -119,15 +128,27 @@
               .withSuccessHandler((data) => {
                 document.getElementById('loading').style.display = 'none';
                 if (data.success === false) {
-                  setErrorMsg(data.header.title);
+                  // ★修正: ログがある場合は表示する
+                  const detailedError = data.logs && data.logs.length > 0 
+                    ? data.header.title + "\n\n【詳細ログ】\n" + data.logs.join("\n")
+                    : data.header.title;
+                  setErrorMsg(detailedError);
                   return;
                 }
                 setMode(data.mode);
                 setHeader(data.header || {});
                 setItems(data.items || []);
-                setSchedule(data.schedule || []);
                 setRemarks(data.remarks || []);
                 setTotals(data.totals || { subtotal: 0, tax: 0, total: 0 });
+
+                let loadedSchedule = data.schedule || [];
+                if (data.mode !== 'sales' && loadedSchedule.length === 0) {
+                   loadedSchedule = Array(3).fill(null).map((_, i) => ({
+                      id: crypto.randomUUID(), count: (i + 1) + '回目',
+                      billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: ''
+                   }));
+                }
+                setSchedule(loadedSchedule);
               })
               .withFailureHandler((error) => {
                 document.getElementById('loading').style.display = 'none';
@@ -135,7 +156,6 @@
               })
               .getOrderData(orderNo, summaryCode);
           } else {
-            // ローカルテスト用
             document.getElementById('loading').style.display = 'none';
           }
         };
@@ -144,6 +164,8 @@
           if(!confirm("スプレッドシートにデータを上書き保存しますか？")) return;
           
           document.getElementById('loading').style.display = 'flex';
+          setSaveStatus('saving');
+
           const saveData = {
             orderNo: header.orderNo,
             mode: mode,
@@ -155,71 +177,61 @@
             google.script.run
               .withSuccessHandler((res) => {
                 document.getElementById('loading').style.display = 'none';
+                setSaveStatus('saved');
                 alert(res.message);
+                setTimeout(() => setSaveStatus('idle'), 3000);
               })
               .withFailureHandler((err) => {
                 document.getElementById('loading').style.display = 'none';
+                setSaveStatus('error');
                 alert("保存エラー: " + err);
               })
               .saveOrderData(saveData);
           }
         };
 
-        // --- Excel Export Function ---
         const handleExportExcel = () => {
-          const wb = XLSX.utils.book_new();
+          if (!confirm("テンプレートを使用してExcelファイルを生成しますか？\n（Code.gsの設定を確認してください）")) return;
           
-          // 1. Header Data
-          const headerRows = [
-            ["受注兼発送依頼書", "", "", "", "作成日", header.date],
-            ["受注No", header.orderNo, "見積書No", header.estimateNo, "伝票記入日", header.slipDate],
-            ["得意先名", header.customerName, "コード", header.customerCode],
-            ["住所", header.customerAddress],
-            ["TEL", header.customerTel, "FAX", header.customerFax],
-            [],
-            ["直送先", header.shipName || "指定なし"],
-            ["住所", header.shipAddress],
-            ["期間", header.periodStartDate, "～", header.periodEndDate, header.periodDuration],
-            [],
-            ["品名", "数量", "単位", "単価", "金額", "備考"]
-          ];
+          document.getElementById('loading').style.display = 'flex';
+          const saveData = {
+            orderNo: header.orderNo,
+            mode: mode,
+            header, items, schedule, remarks, totals
+          };
 
-          // 2. Items
-          const itemRows = items.map(i => [
-            i.productName, 
-            i.quantity, 
-            i.unit, 
-            i.unitPrice, 
-            i.amount, 
-            i.note
-          ]);
-
-          // 3. Schedule (if exists)
-          let scheduleRows = [];
-          if (schedule.length > 0) {
-             scheduleRows.push([], ["請求スケジュール"], ["回数", "請求日", "金額", "伝票No", "備考"]);
-             scheduleRows = scheduleRows.concat(schedule.map(s => [
-               s.count, s.billingDate, s.amount, s.slipNo, s.note
-             ]));
+          if (typeof google !== 'undefined' && google.script) {
+            google.script.run
+              .withSuccessHandler((res) => {
+                document.getElementById('loading').style.display = 'none';
+                if (res.success) {
+                  window.open(res.url, '_blank');
+                  alert(res.message);
+                } else {
+                  alert(res.message);
+                }
+              })
+              .withFailureHandler((err) => {
+                document.getElementById('loading').style.display = 'none';
+                alert("Excel生成エラー: " + err);
+              })
+              .generateOrderSheet(saveData);
           }
-
-          const wsData = [...headerRows, ...itemRows, ...scheduleRows];
-          const ws = XLSX.utils.aoa_to_sheet(wsData);
-          XLSX.utils.book_append_sheet(wb, ws, "受注データ");
-          
-          XLSX.writeFile(wb, `受注兼発送依頼書_${header.orderNo}.xlsx`);
         };
 
-        // --- Update Handlers ---
         const updateHeader = (key, val) => setHeader(prev => ({...prev, [key]: val}));
         const updateItem = (idx, key, val) => {
           const newItems = [...items];
           newItems[idx] = { ...newItems[idx], [key]: val };
-          // Calc
           if (['quantity', 'unitPrice'].includes(key)) {
              const qty = Number(newItems[idx].quantity) || 0;
              const price = Number(newItems[idx].unitPrice) || 0;
              newItems[idx].amount = qty * price;
+          }
+          if (['quantity', 'costPrice'].includes(key)) {
+             const qty = Number(newItems[idx].quantity) || 0;
+             const cPrice = Number(newItems[idx].costPrice) || 0;
+             newItems[idx].costAmount = qty * cPrice;
           }
           setItems(newItems);
         };
@@ -228,16 +240,28 @@
           newSched[idx] = { ...newSched[idx], [key]: val };
           setSchedule(newSched);
         };
-        const updateRemark = (idx, val) => {
+        const updateRemark = (idx, key, val) => {
           const newRemarks = [...remarks];
-          newRemarks[idx].content = val;
+          newRemarks[idx] = { ...newRemarks[idx], [key]: val };
           setRemarks(newRemarks);
         };
-        const addRemark = () => setRemarks([...remarks, { id: crypto.randomUUID(), content: '' }]);
+        const addRemark = () => setRemarks([...remarks, { 
+          id: crypto.randomUUID(), 
+          category: 'その他', 
+          content: '', 
+          date: new Date().toISOString().split('T')[0].replace(/-/g, '/'), 
+          status: '', 
+          mailSent: '' 
+        }]);
         const deleteRemark = (idx) => {
           const newRemarks = [...remarks];
           newRemarks.splice(idx, 1);
           setRemarks(newRemarks);
+        };
+        const markMailSent = (idx) => {
+          const now = new Date();
+          const timeStr = `${now.getFullYear()}/${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${now.getMinutes().toString().padStart(2,'0')}`;
+          updateRemark(idx, 'mailSent', "送信済: " + timeStr);
         };
 
         const handleExtendOrder = () => {
@@ -262,9 +286,78 @@
             tag: "<延長>"
           }));
           setSchedule([]);
-          alert("延長データを作成しました: " + newOrderNo);
+          alert("延長データを作成しました: " + newOrderNo + "\n期間を入力して「スケジュール生成」を押してください。");
         };
-        
+
+        const safeText = (val) => (val === undefined || val === null) ? '' : String(val);
+
+        // --- Auto Schedule Logic ---
+        const calculateMonths = (start, end) => {
+          if(!start || !end) return 0;
+          try {
+            const d1 = new Date(start);
+            const d2 = new Date(end);
+            if(isNaN(d1.getTime()) || isNaN(d2.getTime())) return 0;
+            const diffTime = Math.abs(d2 - d1);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            return Math.round(diffDays / 30) || 0;
+          } catch(e) { return 0; }
+        };
+        const periodMonths = useMemo(() => calculateMonths(header.periodStartDate, header.periodEndDate), [header.periodStartDate, header.periodEndDate]);
+
+        const handleAutoGenerateSchedule = () => {
+          if (!header.periodStartDate || !header.periodEndDate) {
+            alert("期間（開始日・終了日）を入力してください。");
+            return;
+          }
+          if (schedule.length > 0 && !confirm("現在のスケジュールをクリアして自動生成しますか？")) return;
+
+          const months = periodMonths;
+          if (months <= 0) {
+            alert("期間が短すぎるか、日付が正しくありません。");
+            return;
+          }
+
+          const monthlyAmount = items.reduce((sum, item) => sum + (Number(item.unitPrice) || 0), 0);
+          const monthlyCost = items.reduce((sum, item) => sum + (Number(item.costPrice) || 0), 0);
+          
+          const newSchedule = [];
+          const startDate = new Date(header.periodStartDate);
+
+          for (let i = 0; i < months; i++) {
+             const billDate = new Date(startDate);
+             billDate.setMonth(startDate.getMonth() + i);
+             const closeDate = new Date(billDate.getFullYear(), billDate.getMonth() + 1, 0);
+
+             const formatDate = (d) => `${d.getFullYear()}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')}`;
+             const formatClose = (d) => `${d.getMonth()+1}/末`;
+
+             newSchedule.push({
+               id: crypto.randomUUID(),
+               count: (i + 1) + '回目',
+               billingDate: formatDate(billDate),
+               amount: monthlyAmount > 0 ? monthlyAmount : '',
+               costReference: monthlyCost > 0 ? monthlyCost : '',
+               slipNo: '',
+               closingDate: formatClose(closeDate),
+               note: '',
+               checkStatus: ''
+             });
+          }
+          setSchedule(newSchedule);
+        };
+
+        const addScheduleRow = () => {
+          setSchedule([...schedule, {
+             id: crypto.randomUUID(), count: '', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: ''
+          }]);
+        };
+        const removeScheduleRow = (idx) => {
+          const newSched = [...schedule];
+          newSched.splice(idx, 1);
+          setSchedule(newSched);
+        };
+
         const Stamp = ({ title, info }) => (
           <div className="flex flex-col items-center justify-between border-l border-black w-16 h-20 bg-white">
             <div className="w-full text-center border-b border-black text-[11px] bg-label py-1 font-bold">{title}</div>
@@ -285,13 +378,13 @@
           </div>
         );
 
-        const safeText = (val) => (val === undefined || val === null) ? '' : String(val);
-
         if (errorMsg) {
           return (
             <div className="p-10 text-center bg-red-50 min-h-screen">
-              <h2 className="text-red-600 font-bold text-xl mb-4">データが見つかりません</h2>
-              <p className="mb-4 text-gray-600">{errorMsg}</p>
+              <h2 className="text-red-600 font-bold text-xl mb-4">エラーが発生しました</h2>
+              <pre className="mb-4 text-left bg-white p-4 border border-red-200 rounded text-red-700 overflow-auto text-xs whitespace-pre-wrap">
+                {errorMsg}
+              </pre>
               <p className="text-sm text-gray-500">URLの受注番号とスプレッドシートを確認してください。</p>
             </div>
           );
@@ -306,10 +399,6 @@
               {/* Toolbar */}
               <div className="mb-6 bg-white p-4 rounded-lg shadow-md print-hidden flex justify-between items-center border-l-4 border-blue-600">
                 <div className="flex items-center space-x-4">
-                  <button onClick={() => window.history.back()} className="flex items-center text-gray-600 hover:text-blue-600 font-bold">
-                    <ArrowLeft className="w-5 h-5 mr-2" /> 戻る
-                  </button>
-                  <div className="h-6 w-px bg-gray-300"></div>
                   <div className="flex flex-col">
                     <span className="text-xs text-gray-500">摘要コード: {INITIAL_SUMMARY_CODE}</span>
                     <span className="font-bold text-blue-700 flex items-center text-lg">
@@ -322,7 +411,13 @@
                     </button>
                   )}
                 </div>
-                <div className="flex space-x-3">
+                <div className="flex items-center space-x-3">
+                  <div className="text-sm font-medium mr-2 flex items-center w-32 justify-end">
+                    {saveStatus === 'saving' && <span className="text-blue-600 flex items-center animate-pulse"><Loader className="w-4 h-4 mr-1 animate-spin" /> 保存中...</span>}
+                    {saveStatus === 'saved' && <span className="text-green-600 flex items-center fade-out"><CloudCheck className="w-4 h-4 mr-1" /> 保存完了</span>}
+                    {saveStatus === 'error' && <span className="text-red-600">保存エラー</span>}
+                  </div>
+
                   <button onClick={handleExportExcel} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium text-sm shadow">
                     <FileSpreadsheet className="w-4 h-4 mr-2" /> Excel出力
                   </button>
@@ -357,25 +452,13 @@
                       <div className="flex items-center">
                         <span className="font-bold mr-2">受注No.</span>
                         <div className="flex flex-col">
-                          <input 
-                            type="text" 
-                            value={header.orderNo || ''} 
-                            onChange={e => updateHeader('orderNo', e.target.value)}
-                            className="font-mono text-2xl font-bold border-b-2 border-black bg-transparent focus:outline-none w-48"
-                          />
-                          {mode === 'rental' && header.previousOrderNo && (
-                            <span className="text-xs text-gray-500 mt-0.5 font-mono">(元受注: {header.previousOrderNo})</span>
-                          )}
+                          <input type="text" value={header.orderNo || ''} onChange={e => updateHeader('orderNo', e.target.value)} className="font-mono text-2xl font-bold border-b-2 border-black bg-transparent focus:outline-none w-48" />
+                          {mode === 'rental' && header.previousOrderNo && <span className="text-xs text-gray-500 mt-0.5 font-mono">(元受注: {header.previousOrderNo})</span>}
                         </div>
                       </div>
                       <div className="flex items-center self-start pt-2">
                         <span className="font-bold mr-2 text-sm">見積書No.</span>
-                        <input 
-                          type="text" 
-                          value={header.estimateNo || ''} 
-                          onChange={e => updateHeader('estimateNo', e.target.value)}
-                          className="font-mono border-b border-gray-300 w-32 bg-transparent focus:outline-none text-lg" 
-                        />
+                        <input type="text" value={header.estimateNo || ''} onChange={e => updateHeader('estimateNo', e.target.value)} className="font-mono border-b border-gray-300 w-32 bg-transparent focus:outline-none text-lg" />
                       </div>
                     </div>
                   </div>
@@ -469,14 +552,28 @@
 
                     <div className="grid grid-cols-12 border-t border-black">
                       {(mode === 'rental' || mode === 'communication') && (
-                        <div className="col-span-12 border-b border-black p-3 flex items-center">
-                          <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300 mr-4">期間</div>
-                          <div className="flex-1 text-sm flex justify-between items-center font-mono">
-                             <span>{safeText(header.periodStartDate)}</span>
-                             <span>～</span>
-                             <span>{safeText(header.periodEndDate)}</span>
+                        <>
+                          <div className="col-span-12 border-b border-black p-1 flex items-center">
+                            <div className="text-xs bg-label w-20 py-1 rounded font-bold border border-gray-300 text-center mr-2">期間</div>
+                            <div className="flex-1 text-sm flex justify-between items-center font-mono">
+                               <span>( <input type="text" value={header.periodStartDate || ''} onChange={e => updateHeader('periodStartDate', e.target.value)} className="bg-transparent border-b border-gray-300 w-24 text-center outline-none" placeholder="yyyy/mm/dd" /></span>
+                               <span>～</span>
+                               <span><input type="text" value={header.periodEndDate || ''} onChange={e => updateHeader('periodEndDate', e.target.value)} className="bg-transparent border-b border-gray-300 w-24 text-center outline-none" placeholder="yyyy/mm/dd" /> )</span>
+                               {mode === 'communication' && <span className="text-red-500 text-xs ml-1">※終了まで</span>}
+                               <span className="ml-2 font-bold whitespace-nowrap">全 {periodMonths} ヶ月</span>
+                            </div>
                           </div>
-                        </div>
+                          <div className="col-span-12 border-b border-black p-1 flex items-center">
+                            <div className="text-xs bg-label w-20 py-1 rounded font-bold border border-gray-300 text-center mr-2">期間合計</div>
+                            <div className="flex-1 text-sm flex justify-between items-center font-mono">
+                               <span>( {header.periodStartDate} ～ {header.periodEndDate} )</span>
+                               <span className="ml-2 font-bold whitespace-nowrap">全 {periodMonths} ヶ月</span>
+                               <button onClick={handleAutoGenerateSchedule} className="ml-auto bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700 flex items-center print-hidden shadow-sm">
+                                 <Calculator className="w-3 h-3 mr-1" /> スケジュール生成
+                               </button>
+                            </div>
+                          </div>
+                        </>
                       )}
                       <div className="col-span-12 p-3">
                         <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300 w-max mb-2">集金条件</div>
@@ -554,46 +651,99 @@
 
                 {/* Schedule Table */}
                 {mode !== 'sales' && (
-                  <div className="border-2 border-black mb-6">
-                    <div className="grid grid-cols-[3rem_5rem_6rem_6rem_1fr_6rem] bg-label border-b border-black text-center font-bold py-2 text-sm">
+                  <div className="border-2 border-black mb-6 relative">
+                    <div className="grid grid-cols-[3rem_5rem_5rem_6rem_4rem_1fr_3rem] bg-label border-b border-black text-center font-bold py-2 text-sm">
                       <div className="border-r border-black">回数</div>
-                      <div className="border-r border-black">請求日</div>
-                      <div className="border-r border-black">請求金額</div>
+                      <div className="border-r border-black">売上日</div>
+                      <div className="border-r border-black">{mode === 'sales' ? '請求金額' : '原価'}</div>
                       <div className="border-r border-black">伝票No</div>
+                      <div className="border-r border-black">締め日</div>
                       <div className="border-r border-black">備考</div>
                       <div>チェック</div>
                     </div>
                     {schedule.map((row, i) => (
-                      <div key={row.id} className="grid grid-cols-[3rem_5rem_6rem_6rem_1fr_6rem] border-b border-black last:border-none text-sm min-h-[32px]">
-                        <div className="border-r border-black p-1 text-center font-bold">{safeText(row.count)}</div>
+                      <div key={row.id} className="grid grid-cols-[3rem_5rem_5rem_6rem_4rem_1fr_3rem] border-b border-black last:border-none text-sm min-h-[32px] group">
+                        <div className="border-r border-black p-1 text-center font-bold">
+                           <input className="w-full bg-transparent outline-none text-center" value={row.count || ''} onChange={e => updateSchedule(i, 'count', e.target.value)} placeholder={`${i+1}回目`} />
+                        </div>
                         <div className="border-r border-black p-1 text-center"><input className="w-full bg-transparent outline-none text-center font-mono" value={row.billingDate || ''} onChange={e => updateSchedule(i, 'billingDate', e.target.value)} /></div>
-                        <div className="border-r border-black p-1 text-right"><input className="w-full bg-transparent outline-none text-right font-mono" value={row.amount || ''} onChange={e => updateSchedule(i, 'amount', e.target.value)} /></div>
+                        
+                        <div className="border-r border-black p-1 text-right">
+                          <input 
+                            className="w-full bg-transparent outline-none text-right font-mono" 
+                            value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} 
+                            onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} 
+                          />
+                        </div>
+
                         <div className="border-r border-black p-1 text-center"><input className="w-full bg-transparent outline-none text-center font-mono" value={row.slipNo || ''} onChange={e => updateSchedule(i, 'slipNo', e.target.value)} /></div>
-                        <div className="border-r border-black p-1"><input className="w-full bg-transparent outline-none text-xs" value={row.note || ''} onChange={e => updateSchedule(i, 'note', e.target.value)} /></div>
+                        <div className="border-r border-black p-1 text-center"><input className="w-full bg-transparent outline-none text-center font-mono text-xs" value={row.closingDate || ''} onChange={e => updateSchedule(i, 'closingDate', e.target.value)} /></div>
+                        <div className="border-r border-black p-1 flex items-center">
+                           <input className="w-full bg-transparent outline-none text-xs" value={row.note || ''} onChange={e => updateSchedule(i, 'note', e.target.value)} />
+                           <button className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 ml-1 print-hidden" onClick={() => removeScheduleRow(i)} title="行を削除">×</button>
+                        </div>
                         <div className="p-1 text-center"><input className="w-full bg-transparent outline-none text-center text-xs" value={row.checkStatus || ''} onChange={e => updateSchedule(i, 'checkStatus', e.target.value)} /></div>
                       </div>
                     ))}
-                    {schedule.length === 0 && <div className="p-2 text-center text-gray-400 border-b border-black">請求スケジュールはありません</div>}
+                    <div className="p-2 border-t border-gray-300 bg-gray-50 print-hidden text-center">
+                      <button onClick={addScheduleRow} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center justify-center w-full">
+                        <Plus className="w-3 h-3 mr-1" /> 行を追加する
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* Remarks & Footer */}
+                {/* Remarks (Advanced) */}
                 <div className="grid grid-cols-12 gap-6 mt-6">
-                  <div className="col-span-7 border border-black p-3 h-48">
-                    <div className="text-xs font-bold border-b border-black mb-2">備考</div>
-                    <div className="overflow-y-auto h-36">
-                      {remarks.map((rmk, idx) => (
-                        <div key={rmk.id} className="flex mb-1">
-                          <input className="w-full bg-transparent border-b border-gray-200 outline-none text-sm" value={rmk.content || ''} onChange={e => updateRemark(idx, e.target.value)} />
-                          <button onClick={() => deleteRemark(idx)} className="text-gray-400 hover:text-red-500 ml-2"><Trash2 className="w-4 h-4" /></button>
-                        </div>
-                      ))}
-                      <button onClick={addRemark}><Plus className="w-4 h-4 text-blue-500 mt-1" /></button>
+                  <div className="col-span-12 border border-black p-3">
+                    <div className="text-xs font-bold border-b border-black mb-2 flex justify-between items-center">
+                      <span>備考 / 履歴</span>
+                      <button onClick={addRemark} className="text-blue-600 hover:text-blue-800 flex items-center text-xs"><Plus className="w-3 h-3 mr-1" /> 追加</button>
+                    </div>
+                    
+                    <div className="w-full text-sm">
+                      <div className="grid grid-cols-[80px_100px_1fr_100px_140px_30px] gap-2 border-b border-gray-300 pb-1 mb-1 font-bold text-xs bg-gray-100 p-1">
+                        <div>カテゴリ</div>
+                        <div>日時</div>
+                        <div>内容</div>
+                        <div>状況</div>
+                        <div>メール送付</div>
+                        <div></div>
+                      </div>
+                      <div className="overflow-y-auto max-h-48">
+                        {remarks.map((rmk, idx) => (
+                          <div key={rmk.id} className="grid grid-cols-[80px_100px_1fr_100px_140px_30px] gap-2 mb-1 items-center hover:bg-gray-50 p-1">
+                            <div>
+                              <select className="w-full border border-gray-300 text-xs p-1 bg-white" value={rmk.category || 'その他'} onChange={e => updateRemark(idx, 'category', e.target.value)}>
+                                <option value="請求">請求</option>
+                                <option value="出荷">出荷</option>
+                                <option value="その他">その他</option>
+                              </select>
+                            </div>
+                            <div>
+                              <input className="w-full border-b border-gray-300 outline-none text-xs" value={rmk.date || ''} onChange={e => updateRemark(idx, 'date', e.target.value)} placeholder="日付" />
+                            </div>
+                            <div>
+                              <input className="w-full border-b border-gray-300 outline-none text-sm" value={rmk.content || ''} onChange={e => updateRemark(idx, 'content', e.target.value)} />
+                            </div>
+                            <div>
+                              <input className="w-full border-b border-gray-300 outline-none text-xs" value={rmk.status || ''} onChange={e => updateRemark(idx, 'status', e.target.value)} />
+                            </div>
+                            <div className="flex items-center">
+                              <input className="flex-1 border-b border-gray-300 outline-none text-xs mr-1" value={rmk.mailSent || ''} onChange={e => updateRemark(idx, 'mailSent', e.target.value)} placeholder="-" />
+                              <button onClick={() => markMailSent(idx)} className="text-blue-500 hover:text-blue-700" title="送信済みにする"><Mail className="w-4 h-4" /></button>
+                            </div>
+                            <div className="text-center">
+                              <button onClick={() => deleteRemark(idx)} className="text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   
-                  <div className="col-span-5 flex flex-col justify-end">
-                    <div className="border-2 border-black p-4 text-base bg-white shadow-sm">
+                  <div className="col-span-12 flex justify-end mt-4">
+                    <div className="border-2 border-black p-4 text-base bg-white shadow-sm w-1/3">
                       <div className="flex justify-between border-b border-gray-400 pb-2 mb-2 text-sm">
                         <span>小計</span>
                         <span className="font-mono">{totals.subtotal.toLocaleString()} 円</span>
