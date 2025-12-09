@@ -1,4 +1,8 @@
 /**
+ * @NotOnlyCurrentDoc
+ */
+
+/**
  * ■設定エリア
  */
 const SPREADSHEET_ID = "1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE";
@@ -21,6 +25,10 @@ const SHEETS = {
 };
 
 function doGet(e) {
+  // ★追加: 権限不足エラーを回避するためのおまじない
+  // (これを入れることで、スクリプトが「Googleドライブ全体へのアクセス権」を要求するようになります)
+  try { DriveApp.getFiles(); } catch (e) {} 
+
   var template = HtmlService.createTemplateFromFile('index');
   template.initialOrderNo = e.parameter.orderNo || "";
   template.initialSummaryCode = e.parameter.summaryCode || ""; 
@@ -43,6 +51,14 @@ function cleanId(id) {
  * 4. AppSheet用のパスを保存
  */
 function generateOrderSheet(data) {
+  // GASエディタから直接実行された場合のガード（権限承認用）
+  if (!data) {
+    console.log("権限確認のための実行です。");
+    // ダミー呼び出しでDriveAppの権限を確実に認識させる
+    try { DriveApp.getRootFolder(); } catch(e) {} 
+    return { success: false, message: "Webアプリ画面から実行してください。" };
+  }
+
   if (!TEMPLATE_SS_ID) return { success: false, message: "【設定エラー】Code.gs の TEMPLATE_SS_ID を設定してください。" };
   if (!DESTINATION_FOLDER_ID) return { success: false, message: "【設定エラー】Code.gs の DESTINATION_FOLDER_ID を設定してください。" };
 
@@ -238,7 +254,20 @@ function getOrderData(orderNo, summaryCode) {
     const remarks = getRelatedData(SHEETS.REMARKS, "受注No");
 
     const headerData = mapHeaderData(headerRowObj, mode, staffMap);
-    const itemsData = items.map(mapItemData);
+    
+    // ★修正: 数量が0または空の商品はサーバー側で強力に除外する
+    const itemsData = items.map(mapItemData).filter(item => {
+      // 数量が空、null、undefinedの場合は除外
+      if (item.quantity === "" || item.quantity === null || item.quantity === undefined) return false;
+      
+      // 数値変換して0なら除外
+      const qty = Number(item.quantity);
+      if (!isNaN(qty) && qty === 0) return false;
+      
+      // それ以外（有効な数値、または文字列）は表示
+      return true;
+    });
+
     const scheduleData = schedule.map(mapScheduleData);
     const remarksData = remarks.map(mapRemarkData);
 
@@ -254,7 +283,6 @@ function getOrderData(orderNo, summaryCode) {
 
   } catch (e) {
     logs.push("🔥 エラー: " + e.toString());
-    // ★修正: 汎用エラーではなく詳細を返す
     return createMockData(orderNo, mode, logs, "エラー: " + e.message); 
   }
 }
@@ -367,6 +395,11 @@ function mapHeaderData(row, mode, staffMap) {
   const getVal = (key) => (row[key] !== undefined ? String(row[key]) : "");
   const staffCode = getVal('担当者コード');
   const staffName = staffMap[staffCode] || staffCode;
+  
+  // ★修正: 「てすと」という文字が入っていたら空文字にする(安全策)
+  let memo = getVal('特記事項') || getVal('差し戻し理由') || "";
+  if (memo === "てすと") memo = "";
+
   return {
     formId: "様式 03-3BU-004-6 170410",
     title: mode === 'sales' ? "受注兼発送依頼書" : (mode === 'rental' ? "レンタル受注兼発送依頼書" : "通信費 受注兼発送依頼書"),
@@ -383,7 +416,7 @@ function mapHeaderData(row, mode, staffMap) {
     approvalCheck: { status: getVal('営業担当者承認'), name: '', date: '' },
     approvalManager: { status: getVal('部長承認'), name: '', date: '' },
     approvalPresident: { status: getVal('社長承認'), name: '', date: '' },
-    internalMemo: getVal('特記事項') || getVal('差し戻し理由') || "", remarks: "", previousOrderNo: getVal('元受注No')
+    internalMemo: memo, remarks: "", previousOrderNo: getVal('元受注No')
   };
 }
 
