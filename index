@@ -38,6 +38,8 @@
         body { background: white; -webkit-print-color-adjust: exact; }
         #debug-log { display: none !important; }
         input, select, textarea { border-bottom: none !important; }
+        /* 印刷時のselectの見た目を調整 */
+        select { appearance: none; border: none; background: transparent; padding: 0; }
       }
       .writing-vertical-lr { writing-mode: vertical-lr; }
       
@@ -63,8 +65,30 @@
     <div id="debug-log"></div>
 
     <datalist id="closing-dates"><option value="10日"/><option value="20日"/><option value="末日"/></datalist>
-    <datalist id="payment-dates"><option value="当月末"/><option value="翌月10日"/><option value="翌月20日"/><option value="翌月末"/><option value="翌々月10日"/></datalist>
-    <datalist id="payment-methods"><option value="現金"/><option value="振込"/><option value="手形"/><option value="小切手"/><option value="電債"/></datalist>
+    
+    <datalist id="payment-dates">
+      <option value="当月末"/>
+      <option value="翌月10日"/>
+      <option value="翌月20日"/>
+      <option value="翌月末"/>
+      <option value="翌々月10日"/>
+    </datalist>
+    
+    <!-- 支払い方法詳細用のリスト（上段の「従来通り」系は除外） -->
+    <datalist id="payment-details">
+      <option value="現金"/>
+      <option value="振込"/>
+      <option value="手形"/>
+      <option value="手形　サイト90日"/>
+      <option value="手形　サイト120日"/>
+      <option value="手形　サイト115日"/>
+      <option value="10万以上手形　サイト70日"/>
+      <option value="10万以上手形　サイト90日"/>
+      <option value="10万以上手形　サイト97日"/>
+      <option value="10万以上手形　サイト120日"/>
+      <option value="50万以上半金半手サイト115日"/>
+      <option value="10万以上手形"/>
+    </datalist>
     
     <datalist id="tech-requests">
       <option value="機械器具設置" />
@@ -111,6 +135,10 @@
         const [errorMsg, setErrorMsg] = useState('');
         
         const [header, setHeader] = useState({});
+        // 支払い条件用の独立したstate
+        const [paymentConditionType, setPaymentConditionType] = useState('従来通り');
+        const [paymentConditionDetail, setPaymentConditionDetail] = useState('');
+
         const [items, setItems] = useState([]);
         const [schedule, setSchedule] = useState([]);
         const [remarks, setRemarks] = useState([]);
@@ -128,7 +156,6 @@
               .withSuccessHandler((data) => {
                 document.getElementById('loading').style.display = 'none';
                 if (data.success === false) {
-                  // ★修正: ログがある場合は表示する
                   const detailedError = data.logs && data.logs.length > 0 
                     ? data.header.title + "\n\n【詳細ログ】\n" + data.logs.join("\n")
                     : data.header.title;
@@ -136,8 +163,46 @@
                   return;
                 }
                 setMode(data.mode);
-                setHeader(data.header || {});
-                setItems(data.items || []);
+                
+                const cleanHeader = data.header || {};
+                
+                // ★修正: 技術課依頼書のデフォルト値クリア
+                // 許可されたリスト以外の値が入っていたら、強制的に空にする
+                const validTechRequests = ["機械器具設置", "電気通信", "保守点検", "修繕", "その他"];
+                if (cleanHeader.internalMemo && !validTechRequests.includes(cleanHeader.internalMemo)) {
+                   cleanHeader.internalMemo = "";
+                }
+                setHeader(cleanHeader);
+
+                // 支払い条件の初期値を分割
+                const rawMethod = cleanHeader.collectionMethod || "";
+                
+                // ★修正: 「振込」のみが入っている場合も初期状態（空欄）にして選択肢を出しやすくする
+                if (rawMethod === "従来通り" || rawMethod === "") {
+                  setPaymentConditionType("従来通り");
+                  setPaymentConditionDetail("");
+                } else if (rawMethod === "振込") {
+                  // 「振込」の場合は「従来通り」を選択状態にしつつ、詳細は空にしておく（デフォルト扱い）
+                  setPaymentConditionType("従来通り");
+                  setPaymentConditionDetail(""); 
+                } else if (rawMethod.includes("従来通り以外")) {
+                  setPaymentConditionType("従来通り以外");
+                  const detail = rawMethod.replace("従来通り以外", "").trim();
+                  setPaymentConditionDetail(detail);
+                } else {
+                  // それ以外の値（例：手形サイト90日など）が入っている場合は「従来通り以外」として表示
+                  setPaymentConditionType("従来通り以外");
+                  setPaymentConditionDetail(rawMethod);
+                }
+                
+                // 数量0の商品を除外
+                const validItems = (data.items || []).filter(item => {
+                  if (item.quantity === "" || item.quantity === null || item.quantity === undefined) return false;
+                  const qty = Number(item.quantity);
+                  return !isNaN(qty) && qty !== 0;
+                });
+                setItems(validItems);
+                
                 setRemarks(data.remarks || []);
                 setTotals(data.totals || { subtotal: 0, tax: 0, total: 0 });
 
@@ -156,7 +221,16 @@
               })
               .getOrderData(orderNo, summaryCode);
           } else {
+            // ローカルテスト用
             document.getElementById('loading').style.display = 'none';
+            setMode('sales');
+            setHeader({
+                formId: "TEST MODE", title: "テストモード", orderNo: "TEST-001", 
+                customerName: "テスト株式会社", collectionMethod: "従来通り"
+            });
+            setItems([
+                {id:1, productName:"テスト商品A", quantity:1, unit:"個", unitPrice:1000, amount:1000}
+            ]);
           }
         };
 
@@ -166,10 +240,20 @@
           document.getElementById('loading').style.display = 'flex';
           setSaveStatus('saving');
 
+          // 支払い条件を結合
+          let combinedMethod = "";
+          if (paymentConditionType === "従来通り") {
+            combinedMethod = "従来通り";
+          } else {
+            combinedMethod = "従来通り以外" + (paymentConditionDetail ? (" " + paymentConditionDetail) : "");
+          }
+          const updatedHeader = { ...header, collectionMethod: combinedMethod };
+
           const saveData = {
             orderNo: header.orderNo,
             mode: mode,
-            header, items, schedule, remarks, totals,
+            header: updatedHeader,
+            items, schedule, remarks, totals,
             updatedAt: new Date().toISOString()
           };
           
@@ -194,10 +278,20 @@
           if (!confirm("テンプレートを使用してExcelファイルを生成しますか？\n（Code.gsの設定を確認してください）")) return;
           
           document.getElementById('loading').style.display = 'flex';
+
+          let combinedMethod = "";
+          if (paymentConditionType === "従来通り") {
+            combinedMethod = "従来通り";
+          } else {
+            combinedMethod = "従来通り以外" + (paymentConditionDetail ? (" " + paymentConditionDetail) : "");
+          }
+          const updatedHeader = { ...header, collectionMethod: combinedMethod };
+
           const saveData = {
             orderNo: header.orderNo,
             mode: mode,
-            header, items, schedule, remarks, totals
+            header: updatedHeader, 
+            items, schedule, remarks, totals
           };
 
           if (typeof google !== 'undefined' && google.script) {
@@ -491,15 +585,15 @@
                 {/* --- Info Grid --- */}
                 <div className="grid grid-cols-12 border-2 border-black mb-4">
                   
-                  {/* Left Column */}
-                  <div className="col-span-7 border-r border-black">
+                  {/* Left Column (Customer) */}
+                  <div className="col-span-6 border-r border-black flex flex-col">
                     <div className="border-b border-black p-3">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300">社名</div>
+                      <div className="flex justify-between items-start mb-1">
+                        <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300">社名</div>
                         <div className="text-xs text-gray-400">Code: {safeText(header.customerCode)}</div>
                       </div>
                       <div className="px-2">
-                        <div className="font-bold text-xl">{safeText(header.customerName)}</div>
+                        <div className="font-bold text-xl leading-tight">{safeText(header.customerName)}</div>
                         <div className="flex gap-4 text-sm mt-1 text-gray-700">
                           {header.customerBranch && <span>{safeText(header.customerBranch)}</span>}
                           {header.customerDepartment && <span>{safeText(header.customerDepartment)}</span>}
@@ -507,26 +601,28 @@
                       </div>
                     </div>
 
-                    <div className="border-b border-black p-3">
-                      <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300 w-max mb-2">住所</div>
+                    <div className="border-b border-black p-3 flex-1">
+                      <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max mb-2">住所</div>
                       <div className="px-2">
                         {header.customerZipCode && <div className="text-sm mb-1">〒{safeText(header.customerZipCode)}</div>}
-                        <div className="text-base mb-2 leading-relaxed">{safeText(header.customerAddress)}</div>
-                        <div className="flex items-center gap-6 text-sm">
-                           <div className="flex items-center"><span className="font-bold mr-2">TEL:</span><span>{safeText(header.customerTel)}</span></div>
-                           {header.customerFax && <div className="flex items-center"><span className="font-bold mr-2">FAX:</span><span>{safeText(header.customerFax)}</span></div>}
+                        <div className="text-base mb-2 leading-relaxed break-words">
+                           {safeText(header.customerAddress)}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-4 text-sm mt-3">
+                           <div className="flex items-center"><span className="font-bold mr-2 text-gray-600 text-xs">TEL:</span><span>{safeText(header.customerTel)}</span></div>
+                           {header.customerFax && <div className="flex items-center"><span className="font-bold mr-2 text-gray-600 text-xs">FAX:</span><span>{safeText(header.customerFax)}</span></div>}
                         </div>
                       </div>
                     </div>
 
-                    <div className="p-3 flex justify-between items-center">
-                       <div className="flex items-center gap-3">
-                          <span className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300">先方担当</span>
-                          <span className="font-bold border-b border-gray-300 px-2 min-w-[8rem] text-base">{safeText(header.salesRepClient)}</span>
+                    <div className="p-3 flex justify-between items-center bg-gray-50 h-16">
+                       <div className="flex items-center gap-2">
+                          <span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">先方担当</span>
+                          <span className="font-bold border-b border-gray-300 px-2 min-w-[6rem] text-base">{safeText(header.salesRepClient)}</span>
                        </div>
-                       <div className="flex items-center gap-3">
-                          <span className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300">営業担当</span>
-                          <span className="font-bold border-b border-gray-300 px-2 min-w-[8rem] text-base">
+                       <div className="flex items-center gap-2">
+                          <span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">営業担当</span>
+                          <span className="font-bold border-b border-gray-300 px-2 min-w-[6rem] text-base">
                              {header.salesRepInternalMain}
                           </span>
                        </div>
@@ -534,18 +630,18 @@
                   </div>
 
                   {/* Right Column */}
-                  <div className="col-span-5 flex flex-col">
+                  <div className="col-span-6 flex flex-col">
                     <div className="border-b border-black flex-1 p-3">
-                       <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300 w-max mb-2">直送先</div>
-                       <div className="px-2 text-sm space-y-2">
+                       <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max mb-2">直送先</div>
+                       <div className="px-2 text-sm space-y-1">
                           {header.shipName ? (
                             <>
-                              <div className="font-bold text-base">{safeText(header.shipName)}</div>
-                              <div>{safeText(header.shipAddress)}</div>
-                              <div>TEL: {safeText(header.shipTel)}</div>
+                              <div className="font-bold text-base border-b border-dashed border-gray-300 pb-1 mb-1">{safeText(header.shipName)}</div>
+                              <div className="leading-relaxed break-words">{safeText(header.shipAddress)}</div>
+                              <div className="text-gray-600 mt-1">TEL: {safeText(header.shipTel)}</div>
                             </>
                           ) : (
-                            <div className="text-gray-300 text-center py-4">（指定なし）</div>
+                            <div className="text-gray-300 text-center py-8">（指定なし）</div>
                           )}
                        </div>
                     </div>
@@ -553,8 +649,8 @@
                     <div className="grid grid-cols-12 border-t border-black">
                       {(mode === 'rental' || mode === 'communication') && (
                         <>
-                          <div className="col-span-12 border-b border-black p-1 flex items-center">
-                            <div className="text-xs bg-label w-20 py-1 rounded font-bold border border-gray-300 text-center mr-2">期間</div>
+                          <div className="col-span-12 border-b border-black p-1 flex items-center bg-yellow-50">
+                            <div className="text-xs bg-label w-16 py-1 rounded font-bold border border-gray-300 text-center mr-2">期間</div>
                             <div className="flex-1 text-sm flex justify-between items-center font-mono">
                                <span>( <input type="text" value={header.periodStartDate || ''} onChange={e => updateHeader('periodStartDate', e.target.value)} className="bg-transparent border-b border-gray-300 w-24 text-center outline-none" placeholder="yyyy/mm/dd" /></span>
                                <span>～</span>
@@ -563,8 +659,8 @@
                                <span className="ml-2 font-bold whitespace-nowrap">全 {periodMonths} ヶ月</span>
                             </div>
                           </div>
-                          <div className="col-span-12 border-b border-black p-1 flex items-center">
-                            <div className="text-xs bg-label w-20 py-1 rounded font-bold border border-gray-300 text-center mr-2">期間合計</div>
+                          <div className="col-span-12 border-b border-black p-1 flex items-center bg-yellow-50">
+                            <div className="text-xs bg-label w-16 py-1 rounded font-bold border border-gray-300 text-center mr-2">合計</div>
                             <div className="flex-1 text-sm flex justify-between items-center font-mono">
                                <span>( {header.periodStartDate} ～ {header.periodEndDate} )</span>
                                <span className="ml-2 font-bold whitespace-nowrap">全 {periodMonths} ヶ月</span>
@@ -575,14 +671,57 @@
                           </div>
                         </>
                       )}
-                      <div className="col-span-12 p-3">
-                        <div className="text-xs bg-label px-3 py-1 rounded font-bold border border-gray-300 w-max mb-2">集金条件</div>
-                        <div className="flex justify-between text-sm mb-2 px-2">
-                           <div className="flex items-center">締:<input type="text" list="closing-dates" value={header.closingDate || ''} onChange={e => updateHeader('closingDate', e.target.value)} className="border-b border-gray-300 w-16 text-center ml-2 bg-transparent font-bold" /></div>
-                           <div className="flex items-center">払:<input type="text" list="payment-dates" value={header.paymentDate || ''} onChange={e => updateHeader('paymentDate', e.target.value)} className="border-b border-gray-300 w-24 text-center ml-2 bg-transparent font-bold" /></div>
+                      
+                      {/* 集金条件エリア */}
+                      <div className="col-span-12 p-3 pb-2 border-b border-black">
+                        <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max mb-2">集金条件</div>
+                        
+                        <div className="grid grid-cols-2 gap-4 px-2 mb-2">
+                           <div className="flex items-center">
+                             <span className="font-bold text-sm mr-2 w-10 text-right">締月:</span>
+                             <select 
+                               value={header.closingDate || ''} 
+                               onChange={e => updateHeader('closingDate', e.target.value)} 
+                               className="border-b border-gray-400 flex-1 text-center bg-transparent font-bold outline-none"
+                             >
+                               <option value=""></option>
+                               {[...Array(12)].map((_, i) => (
+                                 <option key={i + 1} value={i + 1}>{i + 1}</option>
+                               ))}
+                             </select>
+                           </div>
+                           {/* 払い項目は削除 */}
+                           <div className="flex items-center">
+                           </div>
                         </div>
-                        <div className="text-right text-sm flex justify-end items-center px-2">
-                          種別: <input type="text" list="payment-methods" value={header.collectionMethod || ''} onChange={e => updateHeader('collectionMethod', e.target.value)} className="border border-black px-2 py-0.5 rounded ml-2 w-24 text-center bg-transparent font-bold" />
+
+                        {/* ★支払い条件（上下2段に変更） */}
+                        <div className="flex mt-2 px-2 items-start">
+                          <span className="font-bold text-sm mr-2 mt-1 whitespace-nowrap">支払条件:</span>
+                          <div className="flex-1 border border-black rounded bg-white">
+                            {/* 上段: 従来通り or 以外 (プルダウン) */}
+                            <div className="border-b border-gray-300">
+                               <select 
+                                 className="w-full bg-transparent px-2 py-1 text-sm font-bold outline-none"
+                                 value={paymentConditionType}
+                                 onChange={e => setPaymentConditionType(e.target.value)}
+                               >
+                                 <option value="従来通り">従来通り</option>
+                                 <option value="従来通り以外">従来通り以外</option>
+                               </select>
+                            </div>
+                            {/* 下段: 詳細入力 (リスト選択可) */}
+                            <div>
+                               <input 
+                                 type="text" 
+                                 list="payment-details"
+                                 className="w-full bg-transparent px-2 py-1 text-sm outline-none placeholder-gray-400"
+                                 placeholder="(詳細を入力)"
+                                 value={paymentConditionDetail}
+                                 onChange={e => setPaymentConditionDetail(e.target.value)}
+                               />
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -601,13 +740,13 @@
                     )}
 
                     {mode !== 'rental' && (
-                      <div className="border-t border-black p-2 h-20 flex">
-                         <div className="text-xs bg-label px-2 py-4 rounded font-bold border border-gray-300 writing-vertical-lr text-center mr-2 h-full flex items-center justify-center">技術課<br/>依頼書</div>
-                         <div className="flex-1">
+                      <div className="h-20 flex">
+                         <div className="text-xs bg-label px-2 py-4 rounded font-bold border border-gray-300 writing-vertical-lr text-center mr-2 h-full flex items-center justify-center m-1">技術課<br/>依頼書</div>
+                         <div className="flex-1 p-2 flex items-center">
                            <input type="text" list="tech-requests" 
                               value={header.internalMemo || ''} 
                               onChange={e => updateHeader('internalMemo', e.target.value)} 
-                              className="w-full h-full outline-none text-sm bg-transparent leading-tight border-none p-1"
+                              className="w-full text-sm bg-transparent border-b border-gray-300 p-1 focus:border-blue-500 outline-none transition-colors"
                               placeholder="(選択または入力)"
                            />
                          </div>
