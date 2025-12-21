@@ -63,6 +63,12 @@
       .tab-inactive:hover {
         background-color: #e5e7eb;
       }
+      /* 数値入力時の矢印を消す */
+      input[type=number]::-webkit-inner-spin-button, 
+      input[type=number]::-webkit-outer-spin-button { 
+        -webkit-appearance: none; 
+        margin: 0; 
+      }
     </style>
   </head>
   <body>
@@ -110,7 +116,6 @@
       const Mail = ({ className }) => <IconWrapper className={className}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></IconWrapper>;
       const X = ({ className }) => <IconWrapper className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></IconWrapper>;
       const Clock = ({ className }) => <IconWrapper className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></IconWrapper>;
-      // ★追加: 提出(送信)アイコン
       const Send = ({ className }) => <IconWrapper className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></IconWrapper>;
 
       // GASパラメータ安全受け取り
@@ -131,13 +136,42 @@
       const generateId = () => crypto.randomUUID();
       const safeText = (val) => (val === undefined || val === null) ? '' : String(val);
 
+      // --- 数値入力コンポーネント（3桁区切り対応） ---
+      const NumberInput = ({ value, onChange, className, placeholder, readOnly, textAlign = 'right' }) => {
+        const [isFocused, setIsFocused] = useState(false);
+        const displayValue = useMemo(() => {
+          if (isFocused) return value; // フォーカス時は生の値を表示
+          if (value === '' || value === null || value === undefined) return '';
+          const num = Number(value);
+          if (isNaN(num)) return value;
+          return num.toLocaleString(); // フォーカス外はカンマ区切り
+        }, [value, isFocused]);
+
+        return (
+          <input
+            type="text"
+            className={`${className} text-${textAlign}`}
+            value={displayValue}
+            onChange={(e) => {
+               // 全角数字を半角に、カンマを除去して数値のみにする
+               let v = e.target.value.replace(/,/g, '').replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+               if (v === '' || !isNaN(Number(v))) {
+                 onChange(v);
+               }
+            }}
+            onFocus={() => !readOnly && setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            placeholder={placeholder}
+            readOnly={readOnly}
+          />
+        );
+      };
+
       // --- サブコンポーネント: 個別の受注シート ---
       const SingleOrderSheet = ({ data, isActive, onChange, onSave, onExportExcel, allTabs, tabId, saveStatus }) => {
         const { mode, header, items, schedule, remarks, totals, paymentConditionType, paymentConditionDetail } = data;
         
         const [isIndefinite, setIsIndefinite] = useState(false);
-
-        // 出荷日の行数を管理 (初期値はデータがある最大行、または3行)
         const [shippingRowCount, setShippingRowCount] = useState(3);
 
         useEffect(() => {
@@ -150,11 +184,19 @@
           setShippingRowCount(maxIdx);
         }, [header]);
 
-        const addShippingRow = () => {
-           if (shippingRowCount < 10) setShippingRowCount(prev => prev + 1);
+        const addShippingRow = () => { if (shippingRowCount < 10) setShippingRowCount(prev => prev + 1); };
+
+        // レンタルID分割管理用
+        const rentalIds = useMemo(() => {
+           const parts = (header.rentalId || "").split('-');
+           return [parts[0]||"", parts[1]||"", parts[2]||""];
+        }, [header.rentalId]);
+        const updateRentalId = (idx, val) => {
+           const newParts = [...rentalIds];
+           newParts[idx] = val;
+           updateHeader('rentalId', newParts.join('-'));
         };
 
-        // 計算ロジック
         const calculateMonths = (start, end) => {
           if(!start || !end) return 0;
           try {
@@ -189,20 +231,21 @@
              const cPrice = Number(newItems[idx].costPrice) || 0;
              newItems[idx].costAmount = qty * cPrice;
           }
-          const subtotal = newItems.reduce((sum, i) => sum + (Number(i.amount)||0), 0) 
-                         + schedule.reduce((sum, s) => sum + (Number(s.amount)||0), 0);
-          const tax = Math.floor(subtotal * 0.1);
-          onChange({ ...data, items: newItems, totals: { subtotal, tax, total: subtotal + tax } });
+          recalcTotals(newItems, schedule);
         };
         
         const deleteItem = (idx) => {
           const newItems = [...items];
           newItems.splice(idx, 1);
-          const subtotal = newItems.reduce((sum, i) => sum + (Number(i.amount)||0), 0) 
-                         + schedule.reduce((sum, s) => sum + (Number(s.amount)||0), 0);
-          const tax = Math.floor(subtotal * 0.1);
-          onChange({ ...data, items: newItems, totals: { subtotal, tax, total: subtotal + tax } });
+          recalcTotals(newItems, schedule);
         };
+
+        const recalcTotals = (newItems, newSchedule) => {
+          const subtotal = newItems.reduce((sum, i) => sum + (Number(i.amount)||0), 0) 
+                         + newSchedule.reduce((sum, s) => sum + (Number(s.amount)||0), 0);
+          const tax = Math.floor(subtotal * 0.1);
+          onChange({ ...data, items: newItems, schedule: newSchedule, totals: { subtotal, tax, total: subtotal + tax } });
+        }
 
         const updateSchedule = (idx, key, val) => {
           const newSched = [...schedule];
@@ -212,16 +255,11 @@
         const addScheduleRow = () => {
           const lastRow = schedule[schedule.length - 1];
           const defaultCount = (lastRow && lastRow.count === '延長') ? '1回目' : '';
-          
-          const newSched = [...schedule, {
-             id: generateId(), count: defaultCount, billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: ''
-          }];
+          const newSched = [...schedule, { id: generateId(), count: defaultCount, billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: '' }];
           onChange({ ...data, schedule: newSched });
         };
         const addExtensionRow = () => {
-          const newSched = [...schedule, {
-             id: generateId(), count: '延長', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: ''
-          }];
+          const newSched = [...schedule, { id: generateId(), count: '延長', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: '' }];
           onChange({ ...data, schedule: newSched });
         };
         const removeScheduleRow = (idx) => {
@@ -250,22 +288,12 @@
         };
 
         const handleAutoGenerateSchedule = () => {
-          if (!header.periodStartDate && !isIndefinite) {
-            alert("期間（開始日）を入力してください。");
-            return;
-          }
-          if (!isIndefinite && !header.periodEndDate) {
-             alert("期間（終了日）を入力するか、「終了まで」にチェックを入れてください。");
-             return;
-          }
-
+          if (!header.periodStartDate && !isIndefinite) { alert("期間（開始日）を入力してください。"); return; }
+          if (!isIndefinite && !header.periodEndDate) { alert("期間（終了日）を入力するか、「終了まで」にチェックを入れてください。"); return; }
           if (schedule.length > 0 && !confirm("現在のスケジュールをクリアして自動生成しますか？")) return;
           
           const months = isIndefinite ? 1 : periodMonths;
-          if (months <= 0) {
-            alert("期間が短すぎるか、日付が正しくありません。");
-            return;
-          }
+          if (months <= 0) { alert("期間が短すぎるか、日付が正しくありません。"); return; }
           
           const monthlyAmount = items.reduce((sum, item) => sum + (Number(item.unitPrice) || 0), 0);
           const monthlyCost = items.reduce((sum, item) => sum + (Number(item.costPrice) || 0), 0);
@@ -277,7 +305,6 @@
              const billDate = new Date(startDate);
              billDate.setMonth(startDate.getMonth() + i);
              const closeDate = new Date(billDate.getFullYear(), billDate.getMonth() + 1, 0);
-             
              const formatDate = (d) => `${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')}`;
              const formatClose = (d) => `${d.getMonth()+1}/末`;
              
@@ -292,9 +319,9 @@
           onChange({ ...data, schedule: newSchedule });
         };
 
-        const Stamp = ({ title, info }) => (
-          <div className="flex flex-col items-center justify-between border-l border-black w-16 h-20 bg-white">
-            <div className="w-full text-center border-b border-black text-[11px] bg-label py-1 font-bold">{title}</div>
+        const Stamp = ({ title, info, className }) => (
+          <div className={`flex flex-col items-center justify-between border-l border-black w-14 h-20 bg-white ${className}`}>
+            <div className="w-full text-center border-b border-black text-[10px] bg-label py-1 font-bold">{title}</div>
             <div className="flex-1 flex flex-col items-center justify-center w-full relative">
               {info && info.status === '済' ? (
                 <div className="relative">
@@ -314,15 +341,30 @@
         const borderColor = mode === 'rental' ? 'border-green-600' : (mode === 'communication' ? 'border-purple-600' : 'border-blue-600');
         const titleColor = mode === 'rental' ? 'text-green-700' : (mode === 'communication' ? 'text-purple-700' : 'text-blue-700');
 
-        const itemsTotal = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+        // ★2回目以降(レンタル月額)の計算: 送料を除く
+        const itemsTotal = items.reduce((sum, item) => {
+           if (mode === 'rental' && item.productName && item.productName.includes('送料')) return sum;
+           return sum + (Number(item.amount) || 0);
+        }, 0);
         const monthlyTax = Math.floor(itemsTotal * 0.1);
         const monthlyTotal = itemsTotal + monthlyTax;
-
-        const gridColsClass = mode === 'sales' 
-           ? 'grid-cols-[30px_1fr_50px_50px_80px_80px_80px]' 
-           : 'grid-cols-[30px_1fr_60px_50px_50px_80px_80px_80px_1fr]';
-
         
+        // 原価計（販売モード用）
+        const costTotal = items.reduce((sum, item) => sum + (Number(item.costAmount) || 0), 0);
+
+        // ★Grid Columns調整: 原価金額対応
+        let gridColsClass = 'grid-cols-[30px_1fr_60px_50px_50px_80px_80px_80px_1fr]';
+        
+        if (mode === 'sales') {
+            // 操作(30), 品名(1fr), 規格(100), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80)
+            // 備考なし
+            gridColsClass = 'grid-cols-[30px_1fr_100px_50px_50px_80px_80px_80px]'; 
+        } else if (mode === 'rental' || mode === 'communication') {
+            // 操作(30), 品名(1fr), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80), 備考(1fr)
+            // 規格なし
+            gridColsClass = 'grid-cols-[30px_1fr_50px_50px_80px_80px_80px_1fr]';
+        }
+
         const gridColsSchedule = 'grid-cols-[30px_3rem_4rem_7rem_6rem_4rem_6rem_1fr_3rem]';
 
         return (
@@ -342,7 +384,6 @@
                   </div>
                   <button onClick={() => onExportExcel(tabId)} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium text-sm shadow"><FileSpreadsheet className="w-4 h-4 mr-2" /> Excel出力</button>
                   <button onClick={() => window.print()} className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium text-sm"><Printer className="w-4 h-4 mr-2" /> 印刷</button>
-                  {/* ★修正: 一時保存ボタンに変更 & 提出ボタン追加 */}
                   <button onClick={() => onSave(tabId, 'temporary')} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow font-medium text-sm"><Save className="w-4 h-4 mr-2" /> 一時保存</button>
                   <button onClick={() => onSave(tabId, 'submit')} className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow font-medium text-sm ml-2"><Send className="w-4 h-4 mr-2" /> 提出</button>
                 </div>
@@ -361,24 +402,68 @@
                         {mode === 'communication' && <span>＜通信費＞</span>}
                       </div>
                     </div>
-                    <div className="flex space-x-8 text-base mb-2">
+                    
+                    {/* ★上部入力エリア改修 */}
+                    <div className="flex items-end flex-wrap gap-4 text-base mb-2">
                       <div className="flex items-center">
-                        <span className="font-bold mr-2">受注No.</span>
+                        <span className="font-bold mr-2 text-sm">受注No.</span>
                         <div className="flex flex-col">
                           <input type="text" value={header.orderNo || ''} onChange={e => updateHeader('orderNo', e.target.value)} className="font-mono text-2xl font-bold border-b-2 border-black bg-transparent focus:outline-none w-48" />
                           {mode === 'rental' && header.previousOrderNo && <span className="text-xs text-gray-500 mt-0.5 font-mono">(元受注: {header.previousOrderNo})</span>}
                         </div>
                       </div>
-                      <div className="flex items-center self-start pt-2">
+                      
+                      {/* 見積No. */}
+                      <div className="flex items-center self-end pb-1">
                         <span className="font-bold mr-2 text-sm">見積書No.</span>
                         <input type="text" value={header.estimateNo || ''} onChange={e => updateHeader('estimateNo', e.target.value)} className="font-mono border-b border-gray-300 w-32 bg-transparent focus:outline-none text-lg" />
                       </div>
+
+                      {/* ★販売モードのみ: 売上日、伝票No */}
+                      {mode === 'sales' && (
+                        <>
+                          <div className="flex items-center self-end pb-1">
+                             <span className="font-bold mr-2 text-sm">売上日</span>
+                             <input type="text" value={header.salesDate || ''} onChange={e => updateHeader('salesDate', e.target.value)} className="font-mono border-b border-gray-300 w-24 text-center bg-transparent focus:outline-none" placeholder="yyyy/mm/dd" />
+                          </div>
+                          <div className="flex items-center self-end pb-1">
+                             <span className="font-bold mr-2 text-sm">伝票No</span>
+                             <input type="text" value={header.headerSlipNo || ''} onChange={e => updateHeader('headerSlipNo', e.target.value)} className="font-mono border-b border-gray-300 w-24 text-center bg-transparent focus:outline-none" />
+                          </div>
+                        </>
+                      )}
+
+                      {/* ★レンタルモードのみ: レンタルID、現場名 */}
+                      {mode === 'rental' && (
+                        <>
+                          <div className="flex items-center self-end pb-1">
+                            <span className="font-bold mr-2 text-sm">レンタルID</span>
+                            <div className="flex items-center font-mono">
+                               <input type="text" value={rentalIds[0]} onChange={e => updateRentalId(0, e.target.value)} className="border-b border-gray-300 w-12 text-center bg-transparent focus:outline-none" maxLength="4" placeholder="0000" />
+                               <span className="mx-1">-</span>
+                               <input type="text" value={rentalIds[1]} onChange={e => updateRentalId(1, e.target.value)} className="border-b border-gray-300 w-12 text-center bg-transparent focus:outline-none" maxLength="4" placeholder="0000" />
+                               <span className="mx-1">-</span>
+                               <input type="text" value={rentalIds[2]} onChange={e => updateRentalId(2, e.target.value)} className="border-b border-gray-300 w-12 text-center bg-transparent focus:outline-none" maxLength="4" placeholder="0000" />
+                            </div>
+                          </div>
+                          <div className="flex items-center self-end pb-1 w-full max-w-md mt-1">
+                             <span className="font-bold mr-2 text-sm whitespace-nowrap">現場名</span>
+                             <input type="text" value={header.siteName || ''} onChange={e => updateHeader('siteName', e.target.value)} className="font-bold border-b border-gray-300 w-full bg-transparent focus:outline-none" placeholder="(現場名を入力)" />
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-col items-end">
-                    <div className="flex gap-6 text-xs mb-4 text-gray-700">
-                      <div className="flex flex-col items-end"><div className="flex items-center"><span className="mr-2">作成日:</span><span className="font-mono border-b border-gray-300 min-w-[6rem] text-right text-sm">{safeText(header.date)}</span></div></div>
+                    {/* ★上段: 担当印 と 作成日 */}
+                    <div className="flex items-end gap-3 mb-2">
+                       <Stamp title="担当" info={header.approvalStaff} className="border border-black shadow-sm" />
+                       <div className="flex flex-col items-end pb-1 text-gray-700">
+                          <div className="flex items-center"><span className="mr-2 text-xs">作成日:</span><span className="font-mono border-b border-gray-300 min-w-[6rem] text-right text-sm">{safeText(header.date)}</span></div>
+                       </div>
                     </div>
+                    
+                    {/* ★下段: 承認フロー印 (担当印は上に移動したためここから削除) */}
                     <div className="flex border border-black shadow-sm">
                       <Stamp title="作成" info={header.approvalCreator} /><Stamp title="確認" info={header.approvalCheck} /><div className="w-1 border-l border-black bg-gray-200"></div><Stamp title="部長" info={header.approvalManager} /><Stamp title="社長" info={header.approvalPresident} />
                     </div>
@@ -386,6 +471,7 @@
                 </div>
 
                 <div className="grid grid-cols-12 border-2 border-black mb-4">
+                  {/* 左側: 得意先情報 */}
                   <div className="col-span-6 border-r border-black flex flex-col">
                     <div className="border-b border-black p-3">
                       <div className="flex justify-between items-start mb-1">
@@ -396,7 +482,7 @@
                         <input className="font-bold text-xl leading-tight w-full outline-none bg-transparent" value={header.customerName || ''} onChange={e => updateHeader('customerName', e.target.value)} placeholder="得意先名" />
                         <div className="flex gap-4 text-sm mt-1 text-gray-700">
                           <input className="bg-transparent outline-none border-b border-transparent hover:border-gray-300 focus:border-gray-400 w-1/2" value={header.customerBranch || ''} onChange={e => updateHeader('customerBranch', e.target.value)} placeholder="支店名" />
-                          <input className="bg-transparent outline-none border-b border-transparent hover:border-gray-300 focus:border-gray-400 w-1/2" value={header.customerDepartment || ''} onChange={e => updateHeader('customerDepartment', e.target.value)} placeholder="部署名" />
+                          {/* ★部署名は削除 */}
                         </div>
                       </div>
                     </div>
@@ -419,13 +505,22 @@
                       </div>
                     </div>
                     <div className="p-3 flex justify-between items-center bg-gray-50 h-16">
-                       <div className="flex items-center gap-2 w-1/2"><span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">先方担当</span><input className="font-bold border-b border-gray-300 px-2 w-full text-base bg-transparent outline-none" value={header.salesRepClient || ''} onChange={e => updateHeader('salesRepClient', e.target.value)} /></div>
-                       <div className="flex items-center gap-2 w-1/2 ml-2"><span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">営業担当</span><input className="font-bold border-b border-gray-300 px-2 w-full text-base bg-transparent outline-none" value={header.salesRepInternalMain || ''} onChange={e => updateHeader('salesRepInternalMain', e.target.value)} /></div>
+                       {/* 既存の社名エリアの先方担当者はそのままにするか、要検討だが「直送先」横に移動が目的ならここは空けるか、営業担当だけ残す */}
+                       <div className="flex items-center gap-2 w-full"><span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">営業担当</span><input className="font-bold border-b border-gray-300 px-2 w-full text-base bg-transparent outline-none" value={header.salesRepInternalMain || ''} onChange={e => updateHeader('salesRepInternalMain', e.target.value)} /></div>
                     </div>
                   </div>
+                  
+                  {/* 右側: 直送先・出荷情報 */}
                   <div className="col-span-6 flex flex-col">
                     <div className="border-b border-black flex-1 p-3">
-                       <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max mb-2">直送先</div>
+                       <div className="flex justify-between items-start mb-2">
+                          <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max">直送先</div>
+                          {/* ★担当者を直送先エリアに追加 */}
+                          <div className="flex items-center gap-2 w-1/2">
+                             <span className="text-xs font-bold text-gray-500 whitespace-nowrap">担当者:</span>
+                             <input className="font-bold border-b border-gray-300 px-1 w-full text-sm bg-transparent outline-none" value={header.shipRep || header.salesRepClient || ''} onChange={e => { updateHeader('shipRep', e.target.value); updateHeader('salesRepClient', e.target.value); }} placeholder="先方担当者名" />
+                          </div>
+                       </div>
                        <div className="px-2 text-sm space-y-1">
                           <input className="font-bold text-base border-b border-dashed border-gray-300 pb-1 mb-1 w-full bg-transparent outline-none" value={header.shipName || ''} onChange={e => updateHeader('shipName', e.target.value)} placeholder="(直送先名)" />
                           <textarea className="w-full bg-transparent outline-none resize-none" rows="2" value={header.shipAddress || ''} onChange={e => updateHeader('shipAddress', e.target.value)} placeholder="住所" />
@@ -472,19 +567,20 @@
                       </div>
                       
                       <div className="col-span-12 border-b border-black bg-white p-2">
-                           <div className="grid grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr_0.7fr] gap-x-2 text-center text-xs font-bold text-gray-600 mb-1">
+                           {/* ★ヘッダーの出荷詳細グリッド: モードによって情報No列の表示制御 */}
+                           <div className={`grid gap-x-2 text-center text-xs font-bold text-gray-600 mb-1 ${mode === 'rental' ? 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr]' : 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr_0.7fr]'}`}>
                              <div></div>
                              <div className="bg-gray-100 rounded py-0.5">出荷日</div>
                              <div className="bg-gray-100 rounded py-0.5">納期</div>
                              <div className="bg-gray-100 rounded py-0.5">配送方法</div>
                              <div className="bg-gray-100 rounded py-0.5">時間帯</div>
-                             <div className="bg-gray-100 rounded py-0.5">情報No</div>
+                             {mode !== 'rental' && <div className="bg-gray-100 rounded py-0.5">情報No</div>}
                              <div className="bg-gray-100 rounded py-0.5">出荷No</div>
                            </div>
                            {[...Array(shippingRowCount)].map((_, i) => {
                              const num = i + 1;
                              return (
-                                <div key={num} className="grid grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr_0.7fr] gap-x-2 items-center mb-1 last:mb-0">
+                                <div key={num} className={`grid gap-x-2 items-center mb-1 last:mb-0 ${mode === 'rental' ? 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr]' : 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr_0.7fr]'}`}>
                                   <div className="text-center font-bold text-sm rounded-full bg-gray-100 w-5 h-5 flex items-center justify-center text-[10px]">{num}</div>
                                   <div><input className="w-full text-center bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none text-sm" value={header[`shipDate${num}`] || ''} onChange={e => updateHeader(`shipDate${num}`, e.target.value)} placeholder="yyyy/mm/dd" /></div>
                                   <div><input className="w-full text-center bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none text-sm" value={header[`deliveryDate${num}`] || ''} onChange={e => updateHeader(`deliveryDate${num}`, e.target.value)} placeholder="yyyy/mm/dd" /></div>
@@ -494,7 +590,7 @@
                                         <option value="">指定なし</option><option value="午前中">午前中</option><option value="14時～16時">14時～16時</option><option value="16時～18時">16時～18時</option><option value="18時以降">18時以降</option>
                                     </select>
                                   </div>
-                                  <div><input className="w-full text-center bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none text-sm" value={header[`informationNo${num}`] || ''} onChange={e => updateHeader(`informationNo${num}`, e.target.value)} /></div>
+                                  {mode !== 'rental' && <div><input className="w-full text-center bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none text-sm" value={header[`informationNo${num}`] || ''} onChange={e => updateHeader(`informationNo${num}`, e.target.value)} /></div>}
                                   <div><input className="w-full text-center bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none text-sm" value={header[`shippingNo${num}`] || ''} onChange={e => updateHeader(`shippingNo${num}`, e.target.value)} /></div>
                                 </div>
                              );
@@ -504,13 +600,8 @@
                            </div>
                       </div>
                     </div>
-                    {mode === 'rental' && header.shippingInfo && (
-                      <div className="border-t border-black p-2 text-xs bg-blue-50">
-                          <div className="font-bold text-blue-800 mb-1">[出荷指示]</div>
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 px-1"><span><span className="font-bold">{safeText(header.shippingInfo.date)}</span> 出荷</span><span>({safeText(header.shippingInfo.carrier)})</span><span>着:{safeText(header.shippingInfo.deliveryDate)} {safeText(header.shippingInfo.time)}</span><span>伝:{safeText(header.shippingInfo.slipNo)}</span><span className="text-red-600 font-bold border border-red-600 px-1 ml-auto bg-white">{safeText(header.shippingInfo.status)}</span></div>
-                      </div>
-                    )}
-                    {mode !== 'rental' && (
+                    {/* 通信費モードでは技術課依頼書を表示しない */}
+                    {mode !== 'communication' && mode !== 'rental' && (
                       <div className="h-20 flex">
                          <div className="text-xs bg-label px-2 py-4 rounded font-bold border border-gray-300 writing-vertical-lr text-center mr-2 h-full flex items-center justify-center m-1">技術課<br/>依頼書</div>
                          <div className="flex-1 p-2 flex items-center"><input type="text" list="tech-requests" value={header.internalMemo || ''} onChange={e => updateHeader('internalMemo', e.target.value)} className="w-full text-sm bg-transparent border-b border-gray-300 p-1 focus:border-blue-500 outline-none transition-colors" placeholder="(選択または入力)"/></div>
@@ -520,49 +611,58 @@
                 </div>
 
                 <div className="border-2 border-black mb-6">
-                  {/* ... (Items Grid) ... */}
+                  {/* 明細グリッド: gridColsClass で列制御 */}
                   <div className={`grid ${gridColsClass} bg-label border-b border-black text-center font-bold py-2 text-sm`}>
                     <div className="text-[10px] text-gray-500">操作</div>
                     <div className="border-l border-black border-r">品 名</div>
-                    {mode !== 'sales' && <div className="border-r border-black">規格</div>}
+                    {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black">規格</div>}
                     <div className="border-r border-black">数量</div><div className="border-r border-black">単位</div><div className="border-r border-black">単価</div><div className="border-r border-black">金額</div>
                     <div className="border-r border-black">原価金額</div>
-                    {mode !== 'sales' && <div className="border-r border-black">備考</div>}
+                    {(mode !== 'sales') && <div className="border-r border-black">備考</div>}
                   </div>
                   {items.map((row, i) => (
                     <div key={row.id} className={`relative grid ${gridColsClass} border-b border-black last:border-none text-sm min-h-[32px] group`}>
                       <div className="flex items-center justify-center relative"><div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 print-hidden"><button onClick={() => deleteItem(i)} className="text-gray-300 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div></div>
                       
                       <div className="border-l border-black border-r p-1 pl-3"><input className="w-full bg-transparent outline-none font-medium" value={row.productName || ''} onChange={e => updateItem(i, 'productName', e.target.value)} /></div>
-                      {mode !== 'sales' && <div className="border-r border-black p-1"><input className="w-full bg-transparent outline-none text-center" value={row.spec || ''} onChange={e => updateItem(i, 'spec', e.target.value)} /></div>}
-                      <div className="border-r border-black p-1"><input type="number" className="w-full text-right bg-transparent outline-none font-mono" value={row.quantity || ''} onChange={e => updateItem(i, 'quantity', e.target.value)} /></div>
+                      
+                      {/* 規格: 販売モードのみ */}
+                      {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black p-1"><input className="w-full bg-transparent outline-none text-center" value={row.spec || ''} onChange={e => updateItem(i, 'spec', e.target.value)} /></div>}
+                      
+                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.quantity || ''} onChange={e => updateItem(i, 'quantity', e.target.value)} /></div>
                       <div className="border-r border-black p-1"><input className="w-full text-center bg-transparent outline-none" value={row.unit || ''} onChange={e => updateItem(i, 'unit', e.target.value)} /></div>
-                      <div className="border-r border-black p-1"><input type="number" className="w-full text-right bg-transparent outline-none font-mono" value={row.unitPrice || ''} onChange={e => updateItem(i, 'unitPrice', e.target.value)} /></div>
+                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.unitPrice || ''} onChange={e => updateItem(i, 'unitPrice', e.target.value)} /></div>
                       <div className={`border-r border-black p-1 px-2 text-right font-mono font-bold`}>{row.amount ? Number(row.amount).toLocaleString() : ''}</div>
                       
-                      <div className="border-r border-black p-1"><input type="number" className="w-full text-right bg-transparent outline-none font-mono text-xs" value={row.costAmount || ''} onChange={e => updateItem(i, 'costAmount', e.target.value)} placeholder="-" /></div>
+                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono text-xs" value={row.costAmount || ''} onChange={e => updateItem(i, 'costAmount', e.target.value)} placeholder="-" /></div>
 
-                      {mode !== 'sales' && <div className="p-1 border-r border-black"><input className="w-full bg-transparent outline-none" value={row.note || ''} onChange={e => updateItem(i, 'note', e.target.value)} /></div>}
+                      {(mode !== 'sales') && <div className="p-1 border-r border-black"><input className="w-full bg-transparent outline-none" value={row.note || ''} onChange={e => updateItem(i, 'note', e.target.value)} /></div>}
                     </div>
                   ))}
                   {[...Array(Math.max(0, 5 - items.length))].map((_, i) => (
                       <div key={`empty-${i}`} className={`grid ${gridColsClass} border-b border-black last:border-none text-sm min-h-[32px]`}>
                         <div></div>
                         <div className="border-l border-black border-r"></div>
-                        {mode !== 'sales' && <div className="border-r border-black"></div>}
+                        {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black"></div>}
                         <div className="border-r border-black"></div><div className="border-r border-black"></div><div className="border-r border-black"></div><div className="border-r border-black"></div>
                         <div className="border-r border-black"></div>
-                        {mode !== 'sales' && <div className="border-r border-black"></div>}
+                        {(mode !== 'sales') && <div className="border-r border-black"></div>}
                         <div></div>
                       </div>
                   ))}
                   
                   <div className="border-t border-black border-b border-black text-sm">
                     {mode === 'sales' ? (
-                      <div className="bg-gray-50 p-2 flex justify-end items-center space-x-6 pr-4">
-                        <div className="flex items-center"><span className="text-xs font-bold mr-2">小計</span><span className="font-mono text-base">{totals.subtotal.toLocaleString()}</span></div>
-                        <div className="flex items-center"><span className="text-xs font-bold mr-2">消費税</span><span className="font-mono text-base">{totals.tax.toLocaleString()}</span></div>
-                        <div className="flex items-center"><span className="text-sm font-bold mr-2">合計</span><span className="font-mono text-xl font-bold">{totals.total.toLocaleString()} 円</span></div>
+                      <div className="bg-gray-50 p-2 flex flex-col items-end pr-4">
+                        <div className="flex space-x-6 items-center">
+                          <div className="flex items-center"><span className="text-xs font-bold mr-2">小計</span><span className="font-mono text-base">{totals.subtotal.toLocaleString()}</span></div>
+                          <div className="flex items-center"><span className="text-xs font-bold mr-2">消費税</span><span className="font-mono text-base">{totals.tax.toLocaleString()}</span></div>
+                          <div className="flex items-center"><span className="text-sm font-bold mr-2">合計</span><span className="font-mono text-xl font-bold">{totals.total.toLocaleString()} 円</span></div>
+                        </div>
+                        {/* ★販売モードのみ: 原価計を追加 */}
+                        <div className="flex items-center mt-1 pt-1 border-t border-gray-300 w-48 justify-end">
+                            <span className="text-xs text-gray-500 mr-2">原価計</span><span className="font-mono text-sm">{costTotal.toLocaleString()} 円</span>
+                        </div>
                       </div>
                     ) : (
                       <div className="bg-yellow-50">
@@ -573,7 +673,7 @@
                               <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{totals.total.toLocaleString()} 円</span></div>
                           </div>
                           <div className="p-2 flex justify-end items-center space-x-6 pr-4">
-                              <span className="font-bold text-gray-700 mr-auto pl-2">【2回目以降 (月額)】</span>
+                              <span className="font-bold text-gray-700 mr-auto pl-2">【2回目以降 (月額)】 <span className="text-[10px] font-normal text-gray-500">※送料除く</span></span>
                               <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">小計</span><span className="font-mono">{itemsTotal.toLocaleString()}</span></div>
                               <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">消費税</span><span className="font-mono">{monthlyTax.toLocaleString()}</span></div>
                               <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{monthlyTotal.toLocaleString()} 円</span></div>
@@ -589,7 +689,6 @@
 
                 {mode !== 'sales' && (
                   <div className="border-2 border-black mb-6 relative">
-                    {/* ★修正: ヘッダーに受注No追加 */}
                     <div className={`grid ${gridColsSchedule} bg-label border-b border-black text-center font-bold py-2 text-sm`}>
                       <div className="text-[10px] text-gray-500">操作</div>
                       <div className="border-l border-black border-r">回数</div><div className="border-r border-black">売上日</div><div className="border-r border-black">{mode === 'sales' ? '請求金額' : '原価'}</div><div className="border-r border-black">伝票No</div><div className="border-r border-black">締め日</div><div className="border-r border-black">受注No</div><div className="border-r border-black">備考</div><div>チェック</div>
@@ -610,28 +709,23 @@
                       return (
                         <div key={row.id} className={`grid ${gridColsSchedule} border-b border-black last:border-none text-sm min-h-[32px] group`}>
                           <div className="flex items-center justify-center relative"><div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 print-hidden"><button onClick={() => removeScheduleRow(i)} className="text-gray-300 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div></div>
-                          
                           <div className="border-l border-black border-r p-1 text-center font-bold"><input className="w-full bg-transparent outline-none text-center" value={row.count || ''} onChange={e => updateSchedule(i, 'count', e.target.value)} placeholder={`${i+1}回目`} /></div>
-                          
                           <div className="border-r border-black p-1 text-center">
-                             {/* ★修正: placeholder追加 */}
                              <input className={`w-full bg-transparent outline-none text-center font-mono ${mode==='communication'?'text-gray-400':''}`} value={row.billingDate || ''} onChange={e => updateSchedule(i, 'billingDate', e.target.value)} readOnly={mode==='communication'} placeholder="MM/DD" />
                           </div>
-                          
-                          <div className="border-r border-black p-1 text-right"><input className="w-full bg-transparent outline-none text-right font-mono" value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} /></div>
-                          
+                          <div className="border-r border-black p-1 text-right">
+                             {/* ★金額系: カンマ区切り */}
+                             <NumberInput className="w-full bg-transparent outline-none font-mono" value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} />
+                          </div>
                           <div className="border-r border-black p-1 text-center">
                              <input className={`w-full bg-transparent outline-none text-center font-mono ${mode==='communication'?'text-gray-400':''}`} value={row.slipNo || ''} onChange={e => updateSchedule(i, 'slipNo', e.target.value)} readOnly={mode==='communication'} />
                           </div>
                           <div className="border-r border-black p-1 text-center">
                              <input className={`w-full bg-transparent outline-none text-center font-mono text-xs ${mode==='communication'?'text-gray-400':''}`} value={row.closingDate || ''} onChange={e => updateSchedule(i, 'closingDate', e.target.value)} readOnly={mode==='communication'} />
                           </div>
-
-                          {/* ★追加: 受注No入力 */}
                           <div className="border-r border-black p-1 text-center">
                              <input className="w-full bg-transparent outline-none text-center font-mono text-xs" value={row.rowOrderNo || ''} onChange={e => updateSchedule(i, 'rowOrderNo', e.target.value)} />
                           </div>
-                          
                           <div className="border-r border-black p-1 flex items-center"><input className="w-full bg-transparent outline-none text-xs" value={row.note || ''} onChange={e => updateSchedule(i, 'note', e.target.value)} /></div>
                           <div className="p-1 text-center"><input className="w-full bg-transparent outline-none text-center text-xs" value={row.checkStatus || ''} onChange={e => updateSchedule(i, 'checkStatus', e.target.value)} /></div>
                         </div>
@@ -733,8 +827,8 @@
             // Mock
             document.getElementById('loading').style.display = 'none';
             const mockData = {
-               mode: 'sales',
-               header: { formId: "TEST", title: "テスト", orderNo: "TEST-001", customerName: "テスト株式会社" },
+               mode: 'rental', // sales, rental, communication
+               header: { formId: "TEST", title: "テスト", orderNo: "TEST-001", customerName: "テスト株式会社", periodStartDate: "2024/01/01", periodEndDate: "2024/06/30" },
                items: [{id:1, productName:"テスト商品A", quantity:1, unit:"個", unitPrice:1000, amount:1000}],
                schedule: [], remarks: [], totals: {subtotal:1000, tax:100, total:1100}
             };
@@ -742,7 +836,7 @@
             const tid = generateId();
             setLoadedServerItems(processed.items);
             setLoadedServerSchedule(processed.schedule);
-            setTabs([{ id: tid, title: '販売', mode: 'sales', data: processed }]);
+            setTabs([{ id: tid, title: 'テスト', mode: 'rental', data: processed }]);
             setActiveTabId(tid);
             setLoading(false);
           }
@@ -756,7 +850,10 @@
           }
           let pType = '従来通り';
           let pDetail = '';
-          const rawMethod = cleanHeader.collectionMethod || "";
+          
+          // ★支払条件の初期設定: 保存値があればそれを、なければデフォルト(回収種別２)を使用
+          const rawMethod = cleanHeader.collectionMethod || cleanHeader.defaultCollectionMethod || "";
+          
           if (rawMethod === "従来通り" || rawMethod === "" || rawMethod === "振込") {
              pType = "従来通り";
           } else if (rawMethod.includes("従来通り以外")) {
@@ -834,7 +931,6 @@
           if (activeTabId === tabId) setActiveTabId(newTabs[0].id);
         };
 
-        // ★修正: 引数 type を追加
         const handleSave = (tabId, type = 'temporary') => {
           const targetTab = tabs.find(t => t.id === tabId);
           if (!targetTab) return;
@@ -853,7 +949,6 @@
             header: updatedHeader,
             items: d.items, schedule: d.schedule, remarks: d.remarks, totals: d.totals,
             updatedAt: new Date().toISOString()
-            // 将来的に type を送るならここに含める
           };
           if (typeof google !== 'undefined' && google.script) {
             google.script.run.withSuccessHandler((res) => {
