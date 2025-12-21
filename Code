@@ -373,8 +373,11 @@ function mapHeaderData(row, mode, staffMap, customerNoteMap) {
     shippingDetails[`deliveryTime${i}`] = getVal(`時間帯${i}`);
     shippingDetails[`informationNo${i}`] = getVal(`情報No${i}`);
     shippingDetails[`shippingNo${i}`] = getVal(`出荷No${i}`);
-    shippingDetails[`deliveryMethod${i}`] = getVal(`配送方法${i}`); // ★追加: 配送方法
+    shippingDetails[`deliveryMethod${i}`] = getVal(`配送方法${i}`); 
   }
+
+  // ★回収種別２を取得
+  const collectionMethod2 = getVal('回収種別２'); 
 
   return {
     formId: "様式 03-3BU-004-6 170410",
@@ -386,14 +389,30 @@ function mapHeaderData(row, mode, staffMap, customerNoteMap) {
     customerTel: getVal('会社TEL'), customerFax: getVal('会社FAX'),
     customerNote: customerNoteMap[customerCode] || "", 
     shipName: getVal('直送先名'), shipAddress: getVal('直送先名称_出荷明細'), shipTel: "", 
-    salesRepInternalMain: staffName, salesRepClient: getVal('先方担当者名'), departmentName: getVal('部門コード'), 
+    salesRepInternalMain: staffName, 
+    // ★先方担当者名は直送先エリアで使うためここで取得
+    salesRepClient: getVal('先方担当者名'), 
+    
+    departmentName: getVal('部門コード'), 
     periodStartDate: formatDate(row['レンタル開始日']), periodEndDate: formatDate(row['レンタル終了日']),
-    periodDuration: "", periodNote: "", closingDate: getVal('請求締日'), paymentDate: "", collectionMethod: getVal('回収種別１'),
+    periodDuration: "", periodNote: "", closingDate: getVal('請求締日'), paymentDate: "", 
+    
+    // ★支払条件: 保存値とデフォルト値(回収種別２)
+    collectionMethod: getVal('回収種別１'),
+    defaultCollectionMethod: collectionMethod2,
+
     approvalCreator: { status: getVal('作成者承認'), name: '', date: '' },
     approvalCheck: { status: getVal('営業担当者承認'), name: '', date: '' },
     approvalManager: { status: getVal('部長承認'), name: '', date: '' },
     approvalPresident: { status: getVal('社長承認'), name: '', date: '' },
     internalMemo: memo, remarks: "", previousOrderNo: getVal('元受注No'),
+    
+    // ★新規追加項目
+    salesDate: formatDate(row['売上日']),
+    headerSlipNo: getVal('伝票No'), // ヘッダー用の伝票No
+    siteName: getVal('現場名'),
+    rentalId: getVal('レンタルID'),
+
     ...shippingDetails
   };
 }
@@ -424,9 +443,17 @@ function mapRemarkData(row) {
 function reverseMapHeader(header) {
   const base = {
     '受注日': header.date, '得意先コード': header.customerCode, '得意先名': header.customerName,
-    '直送先名': header.shipName, '先方担当者名': header.salesRepClient, '請求締日': header.closingDate, '回収種別１': header.collectionMethod,
+    '直送先名': header.shipName, 
+    '先方担当者名': header.salesRepClient, // ★直送先エリアで編集された担当者をここに戻す
+    '請求締日': header.closingDate, '回収種別１': header.collectionMethod,
     '郵便番号': header.customerZipCode, '住所１': header.customerAddress, '会社TEL': header.customerTel,
-    'レンタル開始日': header.periodStartDate, 'レンタル終了日': header.periodEndDate, '元受注No': header.previousOrderNo, '特記事項': header.internalMemo
+    'レンタル開始日': header.periodStartDate, 'レンタル終了日': header.periodEndDate, '元受注No': header.previousOrderNo, '特記事項': header.internalMemo,
+    
+    // ★新規追加項目の保存
+    '売上日': header.salesDate,
+    '伝票No': header.headerSlipNo,
+    '現場名': header.siteName,
+    'レンタルID': header.rentalId
   };
 
   // 動的な出荷日データの保存マッピング
@@ -436,7 +463,7 @@ function reverseMapHeader(header) {
     if (header[`deliveryTime${i}`] !== undefined) base[`時間帯${i}`] = header[`deliveryTime${i}`];
     if (header[`informationNo${i}`] !== undefined) base[`情報No${i}`] = header[`informationNo${i}`];
     if (header[`shippingNo${i}`] !== undefined) base[`出荷No${i}`] = header[`shippingNo${i}`];
-    if (header[`deliveryMethod${i}`] !== undefined) base[`配送方法${i}`] = header[`deliveryMethod${i}`]; // ★追加: 配送方法
+    if (header[`deliveryMethod${i}`] !== undefined) base[`配送方法${i}`] = header[`deliveryMethod${i}`];
   }
   return base;
 }
