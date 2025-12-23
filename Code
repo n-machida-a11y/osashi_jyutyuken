@@ -17,15 +17,25 @@ const SHEETS = {
   REMARKS: "受注備考",
   STAFF: "担当者マスタ",
   CUSTOMER: "得意先マスタ",
-  // ★変更: 既存のシート名を使用
-  HISTORY: "出荷伝票履歴" 
+  HISTORY: "出荷済明細" // ★変更: マージ判定用シートを「出荷済明細」に変更
 };
 
 function doGet(e) {
   try { DriveApp.getFiles(); } catch (e) {} 
+  
+  // パラメータを安全に取得
+  var orderNo = "";
+  var summaryCode = "";
+  
+  if (e && e.parameter) {
+    orderNo = e.parameter.orderNo ? String(e.parameter.orderNo) : "";
+    summaryCode = e.parameter.summaryCode ? String(e.parameter.summaryCode) : "";
+  }
+
   var template = HtmlService.createTemplateFromFile('index');
-  template.initialOrderNo = e.parameter.orderNo || "";
-  template.initialSummaryCode = e.parameter.summaryCode || ""; 
+  template.initialOrderNo = orderNo;
+  template.initialSummaryCode = summaryCode; 
+  
   return template.evaluate()
     .setTitle('受注兼発送依頼書')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
@@ -37,9 +47,12 @@ function cleanId(id) {
   return String(id).trim().replace(/^["']+|["']+$/g, '');
 }
 
+/**
+ * Excel帳票生成
+ */
 function generateOrderSheet(data) {
-  if (!data) return { success: false, message: "権限確認実行" };
-  if (!TEMPLATE_SS_ID || !DESTINATION_FOLDER_ID) return { success: false, message: "設定エラー" };
+  if (!data) return { success: false, message: "データが空です" };
+  if (!TEMPLATE_SS_ID || !DESTINATION_FOLDER_ID) return { success: false, message: "設定エラー: テンプレートまたはフォルダIDが未設定です" };
 
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(SHEETS.HEADER);
@@ -144,8 +157,8 @@ function getOrderData(orderNo, summaryCode) {
     const staffMap = getStaffMap(ss, logs);
     const customerNoteMap = getCustomerNoteMap(ss);
     
-    // ★マージ用履歴データの取得 (既存シートから)
-    const historyMap = getHistoryMap(ss, orderNo);
+    // 出荷済データ(マージ用)の取得
+    const historyMap = getHistoryMap(ss);
     
     const sheet = ss.getSheetByName(SHEETS.HEADER);
     if (!sheet) return createMockData(orderNo, mode, logs, "シートが見つかりません");
@@ -193,10 +206,9 @@ function getOrderData(orderNo, summaryCode) {
 
     const headerData = mapHeaderData(headerRowObj, mode, staffMap, customerNoteMap);
     
-    // 明細: 数量0を除外 + ★出荷履歴のマージ
+    // 明細: 数量0を除外 + 出荷履歴(マージ判定)
     const itemsData = items.map(row => {
       const mapped = mapItemData(row);
-      // 履歴シートにデータがあれば優先して上書き（マージ）
       if (mapped.id && historyMap[mapped.id]) {
         mapped.shipped = historyMap[mapped.id].shipped;
         mapped.shippedDate = historyMap[mapped.id].shippedDate;
@@ -228,8 +240,8 @@ function getOrderData(orderNo, summaryCode) {
   }
 }
 
-// ★出荷履歴マップの生成 (出荷伝票履歴シートを利用)
-function getHistoryMap(ss, orderNo) {
+// ★出荷済明細シートを参照 (マージ用)
+function getHistoryMap(ss) {
   const map = {};
   try {
     const sheet = ss.getSheetByName(SHEETS.HISTORY);
@@ -238,22 +250,16 @@ function getHistoryMap(ss, orderNo) {
     if (values.length < 2) return map;
     const headers = values[0].map(h => String(h).trim());
     
-    // ★キー項目: 受注明細No が必須です (シートに追加をお願いします)
     const idIdx = headers.indexOf("受注明細No"); 
     const dateIdx = headers.indexOf("出荷日");
-    const orderNoIdx = headers.indexOf("受注No");
 
-    if (idIdx === -1) return map; // 明細No列がなければ取得不可
+    if (idIdx === -1) return map;
 
     for (let i = 1; i < values.length; i++) {
-      // 受注Noでフィルタリングして高速化
-      if (orderNoIdx !== -1 && cleanId(values[i][orderNoIdx]) !== String(orderNo)) continue;
-
       const id = String(values[i][idIdx]).trim();
       const dateVal = dateIdx !== -1 ? formatDate(values[i][dateIdx]) : "";
       
       if (id) {
-        // 日付が入っていれば出荷済とみなす
         map[id] = {
           shipped: !!dateVal,
           shippedDate: dateVal
@@ -310,19 +316,29 @@ function createMockData(orderNo, mode, logs, msg) {
   };
 }
 
+/**
+ * データ保存処理
+ */
 function saveOrderData(saveData) {
+  // ロックを取得
+  const lock = LockService.getScriptLock();
   try {
+    const success = lock.tryLock(10000); 
+    if (!success) {
+      return { success: false, message: "他ユーザーが編集中です。少し待ってから再試行してください。" };
+    }
+
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const orderNo = cleanId(saveData.orderNo);
     if (!orderNo) return { success: false, message: "受注Noなし" };
 
+    // ヘッダー更新
     updateSheet(ss, SHEETS.HEADER, '受注No', orderNo, reverseMapHeader(saveData.header));
 
     // 明細保存
     saveData.items.forEach(item => {
       if(!item.id || String(item.id).startsWith('pad-')) return;
       
-      // 1. 受注明細シートへの保存
       const dbItem = {
         '受注No': orderNo, '受注明細No': item.id,
         '商品名': item.productName, '規格・型番': item.spec, '数量': item.quantity, '単位': item.unit,
@@ -331,33 +347,8 @@ function saveOrderData(saveData) {
         '種別': saveData.mode
       };
       updateOrAddRow(ss, SHEETS.ITEMS, '受注明細No', item.id, dbItem);
-
-      // 2. ★出荷伝票履歴シートへの保存 (マージ用)
-      // ※既存の列構造に合わせてデータをセットします。
-      // ※'受注明細No'列を追加していただく前提です。
-      const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm:ss");
-      const dbHistory = {
-        '伝票ID': generateUuid(), // 新規ID
-        '作成日時': now,
-        '受注No': orderNo,
-        '出荷日': item.shippedDate, // アプリで入力された出荷日
-        '得意先コード': saveData.header.customerCode,
-        '得意先名': saveData.header.customerName,
-        '先方担当者名': saveData.header.salesRepClient,
-        '直送先名': saveData.header.shipName,
-        '郵便番号': saveData.header.customerZipCode,
-        '住所１': saveData.header.customerAddress,
-        '会社TEL': saveData.header.customerTel,
-        '担当者名': saveData.header.salesRepInternalMain,
-        '出荷商品コード': "", // 必要ならitem.spec等を入れる
-        '出荷台数': item.quantity,
-        
-        // ★重要: これがないとマージできません
-        '受注明細No': item.id 
-      };
-      // 出荷日が入っている(出荷済) or すでに履歴がある場合は更新/追加
-      // ここではアプリからの保存なので、Upsertします
-      updateOrAddRow(ss, SHEETS.HISTORY, '受注明細No', item.id, dbHistory);
+      
+      // 出荷済明細は外部システム連携用のため、ここでは更新しない
     });
 
     // スケジュール保存
@@ -367,12 +358,13 @@ function saveOrderData(saveData) {
         '受注No': orderNo, '請求ID': sch.id,
         '回数': sch.count, '請求売上日': sch.billingDate, '請求金額': sch.amount, 
         '原価金額': sch.costReference, '伝票No': sch.slipNo, '締め日': sch.closingDate, 'チェック状況': sch.checkStatus,
-        '種別': saveData.mode,
-        '行受注No': sch.rowOrderNo
+        '種別': saveData.mode
+        // ★行受注Noは削除
       };
       updateOrAddRow(ss, SHEETS.SCHEDULE, '請求ID', sch.id, dbSch);
     });
 
+    // 備考保存
     saveData.remarks.forEach(rmk => {
       if(!rmk.id) return;
       const dbRmk = {
@@ -386,14 +378,16 @@ function saveOrderData(saveData) {
     // 得意先マスタの備考更新
     if (saveData.header.customerCode) {
        updateOrAddRow(ss, SHEETS.CUSTOMER, '得意先コード', saveData.header.customerCode, {
-          '得意先コード': saveData.header.customerCode,
-          '得意先備考': saveData.header.customerNote
+         '得意先コード': saveData.header.customerCode,
+         '得意先備考': saveData.header.customerNote
        });
     }
 
     return { success: true, message: "保存しました" };
   } catch(e) {
     return { success: false, message: "保存エラー: " + e.toString() };
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -403,7 +397,7 @@ function updateOrAddRow(ss, sheetName, keyColName, keyVal, dataObj) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(h => String(h).trim());
   const keyColIndex = headers.indexOf(keyColName);
   
-  if (keyColIndex === -1) return; // キー列がない場合は何もしない
+  if (keyColIndex === -1) return; 
 
   const data = sheet.getDataRange().getValues();
   let rowIndex = -1;
@@ -423,12 +417,12 @@ function updateOrAddRow(ss, sheetName, keyColName, keyVal, dataObj) {
   });
 
   if (rowIndex > 0) {
-    // 更新: 既存行を上書き (null/undefined以外)
+    // 更新
     const currentRow = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
     const newRow = rowData.map((val, i) => (val !== null && val !== undefined) ? val : currentRow[i]);
     sheet.getRange(rowIndex, 1, 1, headers.length).setValues([newRow]);
   } else {
-    // 新規追加
+    // 新規
     const cleanRow = rowData.map(v => (v === null || v === undefined) ? "" : v);
     sheet.appendRow(cleanRow);
   }
@@ -448,23 +442,26 @@ function mapHeaderData(row, mode, staffMap, customerNoteMap) {
   let memo = getVal('特記事項') || getVal('差し戻し理由') || "";
   if (memo === "てすと") memo = "";
 
-  // 出荷日・納期・時間帯・情報No・出荷No・配送方法を動的に取得 (最大10件)
-  const shippingDetails = {};
-  for (let i = 1; i <= 10; i++) {
-    shippingDetails[`shipDate${i}`] = getVal(`出荷日${i}`);
-    shippingDetails[`deliveryDate${i}`] = getVal(`納期${i}`);
-    shippingDetails[`deliveryTime${i}`] = getVal(`時間帯${i}`);
-    shippingDetails[`informationNo${i}`] = getVal(`情報No${i}`);
-    shippingDetails[`shippingNo${i}`] = getVal(`出荷No${i}`);
-    shippingDetails[`deliveryMethod${i}`] = getVal(`配送方法${i}`); 
-  }
+  // ★JSONカラムからの展開 (列削減対応)
+  let shippingDetails = {};
+  try {
+    const jsonStr = getVal('出荷配送詳細(JSON)');
+    if (jsonStr && jsonStr.startsWith('{')) {
+      shippingDetails = JSON.parse(jsonStr);
+    } else {
+      for (let i = 1; i <= 10; i++) {
+         if (row[`出荷日${i}`] !== undefined) shippingDetails[`shipDate${i}`] = getVal(`出荷日${i}`);
+      }
+    }
+  } catch(e) { console.error("JSON Parse Error", e); }
 
   const collectionMethod2 = getVal('回収種別２'); 
 
   return {
     formId: "様式 03-3BU-004-6 170410",
     title: mode === 'sales' ? "受注兼発送依頼書" : (mode === 'rental' ? "レンタル受注兼発送依頼書" : "通信費 受注兼発送依頼書"),
-    tag: getVal('タグ'), orderNo: getVal('受注No'), estimateNo: "", 
+    // tag: getVal('タグ'), // ★削除
+    orderNo: getVal('受注No'), estimateNo: "", 
     date: formatDate(row['受注日']), slipDate: formatDate(row['伝票記入日']), 
     customerCode: customerCode, customerName: getVal('得意先名'),
     customerZipCode: getVal('郵便番号'), customerAddress: (getVal('住所１')||"") + (getVal('住所２')||""),
@@ -492,7 +489,6 @@ function mapHeaderData(row, mode, staffMap, customerNoteMap) {
     siteName: getVal('現場名'),
     rentalId: getVal('レンタルID'),
 
-    // ★ステータス管理
     dataStatus: getVal('データステータス') || 'temporary',
     mergeTargetOrderNo: getVal('統合先受注No'),
 
@@ -505,7 +501,6 @@ function mapItemData(row) {
     id: row['受注明細No'], type: 'product', productName: row['商品名'], spec: row['規格・型番'], quantity: row['数量'], unit: row['単位'],
     unitPrice: row['単価'], amount: row['受注金額'], serialNumber: row['シリアルNo'], costPrice: row['原単価'], costAmount: row['原価金額'], arrangementDate: formatDate(row['明細納期']), note: row['備考'],
     modeType: row['種別']
-    // shipped, shippedDate は getOrderData 内でマージ
   };
 }
 
@@ -513,8 +508,8 @@ function mapScheduleData(row) {
   return {
     id: row['請求ID'], type: 'schedule_row', count: row['回数'], billingDate: formatDate(row['請求売上日']), amount: row['請求金額'],
     costReference: row['原価金額'], slipNo: row['伝票No'], closingDate: formatDate(row['締め日']), checkStatus: row['チェック状況'],
-    modeType: row['種別'],
-    rowOrderNo: row['行受注No']
+    modeType: row['種別']
+    // rowOrderNo: row['行受注No'] // ★削除
   };
 }
 
@@ -538,19 +533,22 @@ function reverseMapHeader(header) {
     '現場名': header.siteName,
     'レンタルID': header.rentalId,
     
-    // ★ステータス保存
     'データステータス': header.dataStatus,
     '統合先受注No': header.mergeTargetOrderNo
   };
 
+  // ★JSONへまとめる (列削減対応)
+  const shippingDetails = {};
   for (let i = 1; i <= 10; i++) {
-    if (header[`shipDate${i}`] !== undefined) base[`出荷日${i}`] = header[`shipDate${i}`];
-    if (header[`deliveryDate${i}`] !== undefined) base[`納期${i}`] = header[`deliveryDate${i}`];
-    if (header[`deliveryTime${i}`] !== undefined) base[`時間帯${i}`] = header[`deliveryTime${i}`];
-    if (header[`informationNo${i}`] !== undefined) base[`情報No${i}`] = header[`informationNo${i}`];
-    if (header[`shippingNo${i}`] !== undefined) base[`出荷No${i}`] = header[`shippingNo${i}`];
-    if (header[`deliveryMethod${i}`] !== undefined) base[`配送方法${i}`] = header[`deliveryMethod${i}`];
+    if (header[`shipDate${i}`]) shippingDetails[`shipDate${i}`] = header[`shipDate${i}`];
+    if (header[`deliveryDate${i}`]) shippingDetails[`deliveryDate${i}`] = header[`deliveryDate${i}`];
+    if (header[`deliveryTime${i}`]) shippingDetails[`deliveryTime${i}`] = header[`deliveryTime${i}`];
+    if (header[`informationNo${i}`]) shippingDetails[`informationNo${i}`] = header[`informationNo${i}`];
+    if (header[`shippingNo${i}`]) shippingDetails[`shippingNo${i}`] = header[`shippingNo${i}`];
+    if (header[`deliveryMethod${i}`]) shippingDetails[`deliveryMethod${i}`] = header[`deliveryMethod${i}`];
   }
+  base['出荷配送詳細(JSON)'] = JSON.stringify(shippingDetails);
+
   return base;
 }
 
