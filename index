@@ -20,23 +20,11 @@
       .border-black { border-color: #000 !important; }
       .bg-label { background-color: #e5e7eb; }
       
-      .text-base-plus { font-size: 1.1rem; }
-      .text-sm-plus { font-size: 0.95rem; }
-      .text-xs-plus { font-size: 0.85rem; }
-
-      #debug-log {
-        position: fixed; bottom: 0; left: 0; width: 100%; height: 120px;
-        background: #111; color: #0f0; font-family: monospace; font-size: 11px;
-        overflow-y: auto; padding: 10px; z-index: 9999; opacity: 0.9;
-        border-top: 2px solid #444; display: none; 
-      }
-
       @media print {
         .print-hidden { display: none !important; }
         .print-full { width: 100% !important; max-width: none !important; padding: 0 !important; margin: 0 !important; box-shadow: none !important; border: none !important; }
         @page { size: A4; margin: 10mm; }
         body { background: white; -webkit-print-color-adjust: exact; }
-        #debug-log { display: none !important; }
         input, select, textarea { border-bottom: none !important; }
         select { appearance: none; border: none; background: transparent; padding: 0; }
         #tab-bar { display: none !important; }
@@ -63,7 +51,6 @@
       .tab-inactive:hover {
         background-color: #e5e7eb;
       }
-      /* 数値入力時の矢印を消す */
       input[type=number]::-webkit-inner-spin-button, 
       input[type=number]::-webkit-outer-spin-button { 
         -webkit-appearance: none; 
@@ -72,17 +59,8 @@
     </style>
   </head>
   <body>
-    <div id="global-error"></div>
     <div id="root"></div>
-    <div id="loading">
-      <div class="spinner"></div>
-      <div class="text-lg font-bold">システムを起動中...</div>
-      <div style="font-size:12px; color:#999; margin-top:10px; text-align:center;">
-        画面が変わらない場合はブラウザを更新してください。<br>
-        (受注No: <?= initialOrderNo ?>)
-      </div>
-    </div>
-    <div id="debug-log"></div>
+    <div id="loading" style="display:none;"></div> 
 
     <datalist id="closing-dates"><option value="10日"/><option value="20日"/><option value="末日"/></datalist>
     <datalist id="payment-dates">
@@ -97,6 +75,17 @@
       <option value="なし" />
       <option value="機械器具設置" /><option value="電気通信" /><option value="保守点検" /><option value="修繕" /><option value="その他" />
     </datalist>
+
+    <!-- ★修正★: 最も安全な変数の受け渡し方法に変更 -->
+    <script>
+      var SERVER_ORDER_NO = <?!= JSON.stringify(initialOrderNo) ?>;
+      var SERVER_SUMMARY_CODE = <?!= JSON.stringify(initialSummaryCode) ?>;
+      
+      window.APP_CONFIG = {
+        initialOrderNo: SERVER_ORDER_NO || "",
+        initialSummaryCode: SERVER_SUMMARY_CODE || ""
+      };
+    </script>
 
     <script type="text/babel" data-presets="react,typescript">
       const { useState, useEffect, useMemo, useRef, useCallback } = React;
@@ -117,32 +106,38 @@
       const X = ({ className }) => <IconWrapper className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></IconWrapper>;
       const Clock = ({ className }) => <IconWrapper className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></IconWrapper>;
       const Send = ({ className }) => <IconWrapper className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></IconWrapper>;
-      const CheckCircle = ({ className }) => <IconWrapper className={className}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></IconWrapper>;
       const AlertTriangle = ({ className }) => <IconWrapper className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></IconWrapper>;
 
-      // GASパラメータ安全受け取り
+      // グローバル変数から安全に取得
       let INITIAL_ORDER_NO = "";
       let INITIAL_SUMMARY_CODE = "";
       const cleanParam = (val) => String(val).replace(/^["']+|["']+$/g, '');
 
       try {
-        INITIAL_ORDER_NO = <?= JSON.stringify(initialOrderNo) ?> || "";
-        INITIAL_SUMMARY_CODE = <?= JSON.stringify(initialSummaryCode) ?> || "";
-        INITIAL_ORDER_NO = cleanParam(INITIAL_ORDER_NO);
-        INITIAL_SUMMARY_CODE = cleanParam(INITIAL_SUMMARY_CODE);
+        if (window.APP_CONFIG) {
+          INITIAL_ORDER_NO = cleanParam(window.APP_CONFIG.initialOrderNo);
+          INITIAL_SUMMARY_CODE = cleanParam(window.APP_CONFIG.initialSummaryCode);
+        }
       } catch (e) {
         console.error("Param Error", e);
       }
 
-      // --- ユーティリティ関数 ---
+      // --- Components ---
+      const LoadingOverlay = ({ message }) => (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-[9999] flex flex-col items-center justify-center text-white">
+          <div className="animate-spin mb-4"><Loader className="w-10 h-10" /></div>
+          <div className="text-xl font-bold">{message || "処理中..."}</div>
+          <div className="text-sm mt-2 opacity-80">画面を閉じないでください</div>
+        </div>
+      );
+
       const generateId = () => crypto.randomUUID();
       const safeText = (val) => (val === undefined || val === null) ? '' : String(val);
 
-      // --- 数値入力コンポーネント（3桁区切り対応 + マスキング機能） ---
       const NumberInput = ({ value, onChange, className, placeholder, readOnly, textAlign = 'right', isMasked = false }) => {
         const [isFocused, setIsFocused] = useState(false);
         const displayValue = useMemo(() => {
-          if (isMasked) return '0'; // ★仮状態なら0表示
+          if (isMasked) return '0'; 
           if (isFocused) return value; 
           if (value === '' || value === null || value === undefined) return '';
           const num = Number(value);
@@ -156,7 +151,7 @@
             className={`${className} text-${textAlign} ${isMasked ? 'text-gray-300' : ''}`}
             value={displayValue}
             onChange={(e) => {
-               if (isMasked) return; // マスク時は入力不可(または警告)
+               if (isMasked) return;
                let v = e.target.value.replace(/,/g, '').replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
                if (v === '' || !isNaN(Number(v))) {
                  onChange(v);
@@ -170,15 +165,13 @@
         );
       };
 
-      // --- サブコンポーネント: 個別の受注シート ---
-      const SingleOrderSheet = ({ data, isActive, onChange, onSave, onExportExcel, allTabs, tabId, saveStatus }) => {
+      const SingleOrderSheet = ({ data, isActive, onChange, onSave, onExportExcel, saveStatus }) => {
         const { mode, header, items, schedule, remarks, totals, paymentConditionType, paymentConditionDetail } = data;
         
         const [isIndefinite, setIsIndefinite] = useState(false);
         const [shippingRowCount, setShippingRowCount] = useState(3);
         const [showMergeModal, setShowMergeModal] = useState(false); 
 
-        // ★ステータス判定: 'temporary' なら金額をマスクする
         const isTemporary = header.dataStatus === 'temporary';
 
         useEffect(() => {
@@ -193,7 +186,6 @@
 
         const addShippingRow = () => { if (shippingRowCount < 10) setShippingRowCount(prev => prev + 1); };
 
-        // レンタルID分割管理用
         const rentalIds = useMemo(() => {
            const parts = (header.rentalId || "").split('-');
            return [parts[0]||"", parts[1]||"", parts[2]||""];
@@ -262,11 +254,11 @@
         const addScheduleRow = () => {
           const lastRow = schedule[schedule.length - 1];
           const defaultCount = (lastRow && lastRow.count === '延長') ? '1回目' : '';
-          const newSched = [...schedule, { id: generateId(), count: defaultCount, billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: '' }];
+          const newSched = [...schedule, { id: generateId(), count: defaultCount, billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '' }];
           onChange({ ...data, schedule: newSched });
         };
         const addExtensionRow = () => {
-          const newSched = [...schedule, { id: generateId(), count: '延長', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', rowOrderNo: '' }];
+          const newSched = [...schedule, { id: generateId(), count: '延長', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '' }];
           onChange({ ...data, schedule: newSched });
         };
         const removeScheduleRow = (idx) => {
@@ -320,7 +312,7 @@
              const costVal = (!isCommunication || i === 0) ? (monthlyCost > 0 ? monthlyCost : '') : '';
 
              newSchedule.push({
-               id: generateId(), count: (i + 1) + '回目', billingDate: formatDate(billDate), amount: amountVal, costReference: costVal, slipNo: '', closingDate: formatClose(closeDate), note: '', checkStatus: '', rowOrderNo: ''
+               id: generateId(), count: (i + 1) + '回目', billingDate: formatDate(billDate), amount: amountVal, costReference: costVal, slipNo: '', closingDate: formatClose(closeDate), note: '', checkStatus: ''
              });
           }
           onChange({ ...data, schedule: newSchedule });
@@ -348,7 +340,6 @@
         const borderColor = mode === 'rental' ? 'border-green-600' : (mode === 'communication' ? 'border-purple-600' : 'border-blue-600');
         const titleColor = mode === 'rental' ? 'text-green-700' : (mode === 'communication' ? 'text-purple-700' : 'text-blue-700');
 
-        // ★2回目以降(レンタル月額)の計算: 送料を除く
         const itemsTotal = items.reduce((sum, item) => {
            if (mode === 'rental' && item.productName && item.productName.includes('送料')) return sum;
            return sum + (Number(item.amount) || 0);
@@ -356,30 +347,19 @@
         const monthlyTax = Math.floor(itemsTotal * 0.1);
         const monthlyTotal = itemsTotal + monthlyTax;
         
-        // 原価計（販売モード用）
         const costTotal = items.reduce((sum, item) => sum + (Number(item.costAmount) || 0), 0);
 
-        // ★Grid Columns調整: 出荷チェック列削除
-        // 品名(1fr), 規格(100), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80)
         let gridColsClass = 'grid-cols-[30px_1fr_60px_50px_50px_80px_80px_80px_1fr]';
-        
         if (mode === 'sales') {
             gridColsClass = 'grid-cols-[30px_1fr_100px_50px_50px_80px_80px_80px]'; 
         } else if (mode === 'rental' || mode === 'communication') {
             gridColsClass = 'grid-cols-[30px_1fr_50px_50px_80px_80px_80px_1fr]';
         }
 
-        // ★Grid Columns調整: 請求スケジュールのチェック列を復活
-        const gridColsSchedule = 'grid-cols-[30px_3rem_4rem_7rem_6rem_4rem_6rem_1fr_3rem]';
+        // 行受注Noカラム削除分調整
+        const gridColsSchedule = 'grid-cols-[30px_3rem_4rem_7rem_6rem_4rem_6rem_1fr]';
 
-        // ★ステータス選択UI
         const StatusSelector = ({ status, onChange }) => {
-            const getLabel = (s) => {
-                if (s === 'replacement') return '差替';
-                if (s === 'temporary') return '仮';
-                if (s === 'merged') return '統合済';
-                return '通常(本番)';
-            };
             return (
               <div className="flex items-center space-x-1 bg-gray-100 p-1 rounded border border-gray-300">
                  <select value={status} onChange={(e) => onChange(e.target.value)} className="bg-transparent text-xs font-bold outline-none cursor-pointer">
@@ -417,18 +397,16 @@
                 </div>
                 <div className="flex items-center space-x-3">
                   <div className="text-sm font-medium mr-2 flex items-center w-32 justify-end">
-                    {saveStatus === 'saving' && <span className="text-blue-600 flex items-center animate-pulse"><Loader className="w-4 h-4 mr-1 animate-spin" /> 保存中...</span>}
                     {saveStatus === 'saved' && <span className="text-green-600 flex items-center fade-out"><CloudCheck className="w-4 h-4 mr-1" /> 保存完了</span>}
                     {saveStatus === 'error' && <span className="text-red-600">保存エラー</span>}
                   </div>
-                  <button onClick={() => onExportExcel(tabId)} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium text-sm shadow"><FileSpreadsheet className="w-4 h-4 mr-2" /> Excel出力</button>
+                  <button onClick={() => onExportExcel()} className="flex items-center px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium text-sm shadow"><FileSpreadsheet className="w-4 h-4 mr-2" /> Excel出力</button>
                   <button onClick={() => window.print()} className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 font-medium text-sm"><Printer className="w-4 h-4 mr-2" /> 印刷</button>
-                  <button onClick={() => onSave(tabId, 'temporary')} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow font-medium text-sm"><Save className="w-4 h-4 mr-2" /> 一時保存</button>
-                  <button onClick={() => onSave(tabId, 'submit')} className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow font-medium text-sm ml-2"><Send className="w-4 h-4 mr-2" /> 提出</button>
+                  <button onClick={() => onSave('temporary')} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow font-medium text-sm"><Save className="w-4 h-4 mr-2" /> 一時保存</button>
+                  <button onClick={() => onSave('submit')} className="flex items-center px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow font-medium text-sm ml-2"><Send className="w-4 h-4 mr-2" /> 提出</button>
                 </div>
               </div>
 
-              {/* 統合モーダル */}
               {showMergeModal && (
                   <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 print-hidden">
                       <div className="bg-white p-6 rounded-lg shadow-xl w-96">
@@ -453,17 +431,15 @@
                     <div className="flex items-end space-x-4 mb-4">
                       <h1 className="text-3xl font-serif font-bold tracking-widest border-b-4 border-double border-black pb-1 inline-block">
                         {mode === 'rental' ? 'レンタル受注兼発送依頼書' : (mode === 'communication' ? '通信費 受注兼発送依頼書' : '受注兼発送依頼書')}
-                        {/* ★タイトルへのステータス追記 */}
                         {header.dataStatus === 'temporary' && <span className="text-red-600 ml-2">【仮】</span>}
                         {header.dataStatus === 'replacement' && <span className="text-red-600 ml-2">【差替】</span>}
                       </h1>
                       <div className="flex flex-col text-sm font-bold text-red-600 mb-1">
-                        {header.tag && <span>{safeText(header.tag)}</span>}
+                        {/* タグ表示削除済み */}
                         {mode === 'communication' && <span>＜通信費＞</span>}
                       </div>
                     </div>
                     
-                    {/* ★上部入力エリア改修 */}
                     <div className="flex items-end flex-wrap gap-4 text-base mb-2">
                       <div className="flex items-center">
                         <span className="font-bold mr-2 text-sm">受注No.</span>
@@ -473,13 +449,11 @@
                         </div>
                       </div>
                       
-                      {/* 見積No. */}
                       <div className="flex items-center self-end pb-1">
                         <span className="font-bold mr-2 text-sm">見積書No.</span>
                         <input type="text" value={header.estimateNo || ''} onChange={e => updateHeader('estimateNo', e.target.value)} className="font-mono border-b border-gray-300 w-32 bg-transparent focus:outline-none text-lg" />
                       </div>
 
-                      {/* ★販売モードのみ: 売上日、伝票No */}
                       {mode === 'sales' && (
                         <>
                           <div className="flex items-center self-end pb-1">
@@ -493,7 +467,6 @@
                         </>
                       )}
 
-                      {/* ★レンタルモードのみ: レンタルID、現場名 */}
                       {mode === 'rental' && (
                         <>
                           <div className="flex items-center self-end pb-1">
@@ -515,7 +488,6 @@
                     </div>
                   </div>
                   <div className="flex flex-col items-end">
-                    {/* ★上段: 担当印 と 作成日 */}
                     <div className="flex items-end gap-3 mb-2">
                        <Stamp title="担当" info={header.approvalStaff} className="border border-black shadow-sm" />
                        <div className="flex flex-col items-end pb-1 text-gray-700">
@@ -523,7 +495,6 @@
                        </div>
                     </div>
                     
-                    {/* ★下段: 承認フロー印 (担当印は上に移動したためここから削除) */}
                     <div className="flex border border-black shadow-sm">
                       <Stamp title="作成" info={header.approvalCreator} /><Stamp title="確認" info={header.approvalCheck} /><div className="w-1 border-l border-black bg-gray-200"></div><Stamp title="部長" info={header.approvalManager} /><Stamp title="社長" info={header.approvalPresident} />
                     </div>
@@ -531,18 +502,15 @@
                 </div>
 
                 <div className="grid grid-cols-12 border-2 border-black mb-4">
-                  {/* 左側: 得意先情報 */}
                   <div className="col-span-6 border-r border-black flex flex-col">
                     <div className="border-b border-black p-3">
                       <div className="flex justify-between items-start mb-1">
                         <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300">社名</div>
-                        {/* 削除: 得意先コード */}
                       </div>
                       <div className="px-2">
                         <input className="font-bold text-xl leading-tight w-full outline-none bg-transparent" value={header.customerName || ''} onChange={e => updateHeader('customerName', e.target.value)} placeholder="得意先名" />
                         <div className="flex gap-4 text-sm mt-1 text-gray-700">
                           <input className="bg-transparent outline-none border-b border-transparent hover:border-gray-300 focus:border-gray-400 w-1/2" value={header.customerBranch || ''} onChange={e => updateHeader('customerBranch', e.target.value)} placeholder="支店名" />
-                          {/* ★部署名は削除 */}
                         </div>
                       </div>
                     </div>
@@ -569,12 +537,10 @@
                     </div>
                   </div>
                   
-                  {/* 右側: 直送先・出荷情報 */}
                   <div className="col-span-6 flex flex-col">
                     <div className="border-b border-black flex-1 p-3">
                        <div className="flex justify-between items-start mb-2">
                           <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300 w-max">直送先</div>
-                          {/* ★担当者を直送先エリアに追加 */}
                           <div className="flex items-center gap-2 w-1/2">
                              <span className="text-xs font-bold text-gray-500 whitespace-nowrap">担当者:</span>
                              <input className="font-bold border-b border-gray-300 px-1 w-full text-sm bg-transparent outline-none" value={header.shipRep || header.salesRepClient || ''} onChange={e => { updateHeader('shipRep', e.target.value); updateHeader('salesRepClient', e.target.value); }} placeholder="先方担当者名" />
@@ -626,7 +592,6 @@
                       </div>
                       
                       <div className="col-span-12 border-b border-black bg-white p-2">
-                           {/* ★ヘッダーの出荷詳細グリッド: モードによって情報No列の表示制御 */}
                            <div className={`grid gap-x-2 text-center text-xs font-bold text-gray-600 mb-1 ${mode === 'rental' ? 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr]' : 'grid-cols-[20px_1fr_1fr_1fr_1fr_0.7fr_0.7fr]'}`}>
                              <div></div>
                              <div className="bg-gray-100 rounded py-0.5">出荷日</div>
@@ -659,7 +624,6 @@
                            </div>
                       </div>
                     </div>
-                    {/* 通信費モードでは技術課依頼書を表示しない */}
                     {mode !== 'communication' && mode !== 'rental' && (
                       <div className="h-20 flex">
                          <div className="text-xs bg-label px-2 py-4 rounded font-bold border border-gray-300 writing-vertical-lr text-center mr-2 h-full flex items-center justify-center m-1">技術課<br/>依頼書</div>
@@ -670,7 +634,6 @@
                 </div>
 
                 <div className="border-2 border-black mb-6">
-                  {/* 明細グリッド: gridColsClass で列制御 */}
                   <div className={`grid ${gridColsClass} bg-label border-b border-black text-center font-bold py-2 text-sm`}>
                     <div className="text-[10px] text-gray-500">操作</div>
                     
@@ -689,10 +652,8 @@
                           {row.shippedDate && <span className="text-[9px] text-green-600 font-bold block leading-none print-hidden">出荷日: {row.shippedDate}</span>}
                       </div>
                       
-                      {/* 規格: 販売モードのみ */}
                       {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black p-1"><input className="w-full bg-transparent outline-none text-center" value={row.spec || ''} onChange={e => updateItem(i, 'spec', e.target.value)} /></div>}
                       
-                      {/* ★【仮】のときは金額系を0表示 (isMasked) */}
                       <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.quantity || ''} onChange={e => updateItem(i, 'quantity', e.target.value)} /></div>
                       <div className="border-r border-black p-1"><input className="w-full text-center bg-transparent outline-none" value={row.unit || ''} onChange={e => updateItem(i, 'unit', e.target.value)} /></div>
                       <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.unitPrice || ''} onChange={e => updateItem(i, 'unitPrice', e.target.value)} isMasked={isTemporary} /></div>
@@ -723,7 +684,6 @@
                           <div className="flex items-center"><span className="text-xs font-bold mr-2">消費税</span><span className="font-mono text-base">{isTemporary ? '0' : totals.tax.toLocaleString()}</span></div>
                           <div className="flex items-center"><span className="text-sm font-bold mr-2">合計</span><span className="font-mono text-xl font-bold">{isTemporary ? '0' : totals.total.toLocaleString()} 円</span></div>
                         </div>
-                        {/* ★販売モードのみ: 原価計を追加 */}
                         <div className="flex items-center mt-1 pt-1 border-t border-gray-300 w-48 justify-end">
                             <span className="text-xs text-gray-500 mr-2">原価計</span><span className="font-mono text-sm">{isTemporary ? '0' : costTotal.toLocaleString()} 円</span>
                         </div>
@@ -753,9 +713,10 @@
 
                 {mode !== 'sales' && (
                   <div className="border-2 border-black mb-6 relative">
+                    {/* 行受注No削除に伴いグリッドカラム数調整 */}
                     <div className={`grid ${gridColsSchedule} bg-label border-b border-black text-center font-bold py-2 text-sm`}>
                       <div className="text-[10px] text-gray-500">操作</div>
-                      <div className="border-l border-black border-r">回数</div><div className="border-r border-black">売上日</div><div className="border-r border-black">{mode === 'sales' ? '請求金額' : '原価'}</div><div className="border-r border-black">伝票No</div><div className="border-r border-black">締め日</div><div className="border-r border-black">受注No</div><div className="border-r border-black">備考</div><div>チェック</div>
+                      <div className="border-l border-black border-r">回数</div><div className="border-r border-black">売上日</div><div className="border-r border-black">{mode === 'sales' ? '請求金額' : '原価'}</div><div className="border-r border-black">伝票No</div><div className="border-r border-black">締め日</div><div className="border-r border-black">備考</div><div>チェック</div>
                     </div>
                     {schedule.map((row, i) => {
                       if (row.count === '延長') {
@@ -778,7 +739,6 @@
                              <input className={`w-full bg-transparent outline-none text-center font-mono ${mode==='communication'?'text-gray-400':''}`} value={row.billingDate || ''} onChange={e => updateSchedule(i, 'billingDate', e.target.value)} readOnly={mode==='communication'} placeholder="MM/DD" />
                           </div>
                           <div className="border-r border-black p-1 text-right">
-                             {/* ★金額系: カンマ区切り + 仮マスク */}
                              <NumberInput className="w-full bg-transparent outline-none font-mono" value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} isMasked={isTemporary} />
                           </div>
                           <div className="border-r border-black p-1 text-center">
@@ -787,9 +747,7 @@
                           <div className="border-r border-black p-1 text-center">
                              <input className={`w-full bg-transparent outline-none text-center font-mono text-xs ${mode==='communication'?'text-gray-400':''}`} value={row.closingDate || ''} onChange={e => updateSchedule(i, 'closingDate', e.target.value)} readOnly={mode==='communication'} />
                           </div>
-                          <div className="border-r border-black p-1 text-center">
-                             <input className="w-full bg-transparent outline-none text-center font-mono text-xs" value={row.rowOrderNo || ''} onChange={e => updateSchedule(i, 'rowOrderNo', e.target.value)} />
-                          </div>
+                          {/* 行受注No入力欄削除 */}
                           <div className="border-r border-black p-1 flex items-center"><input className="w-full bg-transparent outline-none text-xs" value={row.note || ''} onChange={e => updateSchedule(i, 'note', e.target.value)} /></div>
                           <div className="p-1 text-center"><input className="w-full bg-transparent outline-none text-center text-xs" value={row.checkStatus || ''} onChange={e => updateSchedule(i, 'checkStatus', e.target.value)} /></div>
                         </div>
@@ -830,260 +788,6 @@
         );
       };
 
-      // --- 親コンポーネント (タブ管理) ---
-      function App() {
-        const [tabs, setTabs] = useState([]);
-        const [activeTabId, setActiveTabId] = useState(null);
-        const [saveStatus, setSaveStatus] = useState('idle');
-        const [loading, setLoading] = useState(true);
-        const [errorMsg, setErrorMsg] = useState('');
-        const [loadedServerItems, setLoadedServerItems] = useState([]);
-        const [loadedServerSchedule, setLoadedServerSchedule] = useState([]);
-
-        useEffect(() => {
-          loadData(INITIAL_ORDER_NO, INITIAL_SUMMARY_CODE);
-        }, []);
-
-        const loadData = (orderNo, summaryCode) => {
-          if (typeof google !== 'undefined' && google.script) {
-            google.script.run
-              .withSuccessHandler((data) => {
-                document.getElementById('loading').style.display = 'none';
-                if (data.success === false) {
-                   setErrorMsg(data.header ? (data.header.title + "\n" + (data.logs||[]).join("\n")) : "ロードエラー");
-                   setLoading(false);
-                   return;
-                }
-                const processedData = processLoadedData(data);
-                setLoadedServerItems(processedData.items || []);
-                setLoadedServerSchedule(processedData.schedule || []);
-
-                const firstTabId = generateId();
-                const modeTitle = data.mode === 'sales' ? '販売' : (data.mode === 'rental' ? 'レンタル' : '通信');
-                const filteredItems = (processedData.items || []).filter(i => !i.modeType || i.modeType === data.mode);
-                const filteredSchedule = (processedData.schedule || []).filter(s => !s.modeType || s.modeType === data.mode);
-                const sub = filteredItems.reduce((sum, i) => sum + (Number(i.amount)||0), 0) 
-                          + filteredSchedule.reduce((sum, s) => sum + (Number(s.amount)||0), 0);
-                const tax = Math.floor(sub * 0.1);
-
-                const initialTabData = {
-                   ...processedData,
-                   items: filteredItems,
-                   schedule: filteredSchedule,
-                   totals: { subtotal: sub, tax, total: sub+tax }
-                };
-                
-                setTabs([{
-                  id: firstTabId,
-                  title: modeTitle,
-                  mode: data.mode,
-                  data: initialTabData
-                }]);
-                setActiveTabId(firstTabId);
-                setLoading(false);
-              })
-              .withFailureHandler((error) => {
-                document.getElementById('loading').style.display = 'none';
-                setErrorMsg("システムエラー: " + error.message);
-              })
-              .getOrderData(orderNo, summaryCode);
-          } else {
-            // Mock
-            document.getElementById('loading').style.display = 'none';
-            const mockData = {
-               mode: 'rental', // sales, rental, communication
-               header: { formId: "TEST", title: "テスト", orderNo: "TEST-001", customerName: "テスト株式会社", periodStartDate: "2024/01/01", periodEndDate: "2024/06/30" },
-               items: [{id:1, productName:"テスト商品A", quantity:1, unit:"個", unitPrice:1000, amount:1000}],
-               schedule: [], remarks: [], totals: {subtotal:1000, tax:100, total:1100}
-            };
-            const processed = processLoadedData(mockData);
-            const tid = generateId();
-            setLoadedServerItems(processed.items);
-            setLoadedServerSchedule(processed.schedule);
-            setTabs([{ id: tid, title: 'テスト', mode: 'rental', data: processed }]);
-            setActiveTabId(tid);
-            setLoading(false);
-          }
-        };
-
-        const processLoadedData = (data) => {
-          const cleanHeader = data.header || {};
-          const validTechRequests = ["なし", "機械器具設置", "電気通信", "保守点検", "修繕", "その他"];
-          if (cleanHeader.internalMemo && !validTechRequests.includes(cleanHeader.internalMemo)) {
-             cleanHeader.internalMemo = "";
-          }
-          let pType = '従来通り';
-          let pDetail = '';
-          
-          // ★支払条件の初期設定: 保存値があればそれを、なければデフォルト(回収種別２)を使用
-          const rawMethod = cleanHeader.collectionMethod || cleanHeader.defaultCollectionMethod || "";
-          
-          if (rawMethod === "従来通り" || rawMethod === "" || rawMethod === "振込") {
-             pType = "従来通り";
-          } else if (rawMethod.includes("従来通り以外")) {
-             pType = "従来通り以外";
-             pDetail = rawMethod.replace("従来通り以外", "").trim();
-          } else {
-             pType = "従来通り以外";
-             pDetail = rawMethod;
-          }
-          const validItems = (data.items || []).filter(item => {
-            if (item.quantity === "" || item.quantity === null || item.quantity === undefined) return false;
-            const qty = Number(item.quantity);
-            return !isNaN(qty) && qty !== 0;
-          });
-          return {
-             ...data,
-             header: cleanHeader,
-             items: validItems,
-             schedule: data.schedule || [],
-             paymentConditionType: pType,
-             paymentConditionDetail: pDetail
-          };
-        };
-
-        const handleTabChange = (tabId, newData) => {
-          setTabs(prev => prev.map(t => t.id === tabId ? { ...t, data: newData } : t));
-        };
-
-        const addNewTab = (mode) => {
-          const currentTab = tabs.find(t => t.id === activeTabId);
-          const baseData = currentTab ? currentTab.data : null;
-          const copiedItems = loadedServerItems.map(item => ({
-             ...item,
-             id: generateId(), 
-             modeType: mode 
-          }));
-          let initialSchedule = loadedServerSchedule.filter(s => s.modeType === mode);
-          if (initialSchedule.length === 0 && mode !== 'sales') {
-             initialSchedule = Array(3).fill(null).map((_, i) => ({
-                id: generateId(), count: (i + 1) + '回目', billingDate: '', amount: '', costReference: '', slipNo: '', closingDate: '', note: '', checkStatus: '', modeType: mode, rowOrderNo: ''
-             }));
-          }
-          const sub = copiedItems.reduce((sum, i) => sum + (Number(i.amount)||0), 0) 
-                    + initialSchedule.reduce((sum, s) => sum + (Number(s.amount)||0), 0);
-          const tax = Math.floor(sub * 0.1);
-          const newId = generateId();
-          const title = mode === 'sales' ? '販売' : (mode === 'rental' ? 'レンタル' : '通信');
-          const newData = {
-             mode: mode,
-             header: { 
-               ...(baseData?.header || {}), 
-               orderNo: baseData?.header?.orderNo || "",
-               periodStartDate: "", periodEndDate: "" 
-             },
-             items: copiedItems, 
-             schedule: initialSchedule,
-             remarks: [],
-             totals: { subtotal: sub, tax, total: sub+tax },
-             paymentConditionType: baseData?.paymentConditionType || '従来通り',
-             paymentConditionDetail: baseData?.paymentConditionDetail || ''
-          };
-          setTabs([...tabs, { id: newId, title, mode, data: newData }]);
-          setActiveTabId(newId);
-        };
-
-        const removeTab = (e, tabId) => {
-          e.stopPropagation();
-          if (tabs.length <= 1) {
-            alert("最後のタブは削除できません。");
-            return;
-          }
-          if (!confirm("このシート（タブ）を削除しますか？\n入力内容は失われます。")) return;
-          const newTabs = tabs.filter(t => t.id !== tabId);
-          setTabs(newTabs);
-          if (activeTabId === tabId) setActiveTabId(newTabs[0].id);
-        };
-
-        const handleSave = (tabId, type = 'temporary') => {
-          const targetTab = tabs.find(t => t.id === tabId);
-          if (!targetTab) return;
-          
-          const actionName = type === 'submit' ? '提出' : '一時保存';
-          if(!confirm(`「${targetTab.title}」タブの内容を${actionName}しますか？`)) return;
-          
-          document.getElementById('loading').style.display = 'flex';
-          setSaveStatus('saving');
-          const d = targetTab.data;
-          let combinedMethod = d.paymentConditionType === "従来通り" ? "従来通り" : "従来通り以外" + (d.paymentConditionDetail ? (" " + d.paymentConditionDetail) : "");
-          const updatedHeader = { ...d.header, collectionMethod: combinedMethod };
-          const saveData = {
-            orderNo: d.header.orderNo,
-            mode: d.mode, 
-            header: updatedHeader,
-            items: d.items, schedule: d.schedule, remarks: d.remarks, totals: d.totals,
-            updatedAt: new Date().toISOString()
-          };
-          if (typeof google !== 'undefined' && google.script) {
-            google.script.run.withSuccessHandler((res) => {
-                document.getElementById('loading').style.display = 'none';
-                setSaveStatus('saved');
-                alert(res.message);
-                setTimeout(() => setSaveStatus('idle'), 3000);
-              }).withFailureHandler((err) => {
-                document.getElementById('loading').style.display = 'none';
-                setSaveStatus('error');
-                alert("保存エラー: " + err);
-              }).saveOrderData(saveData);
-          } else {
-             setTimeout(() => {
-                document.getElementById('loading').style.display = 'none';
-                setSaveStatus('saved');
-                alert(`${actionName}しました(Mock)`);
-             }, 1000);
-          }
-        };
-
-        const handleExportExcel = (tabId) => {
-           const targetTab = tabs.find(t => t.id === tabId);
-           if (!targetTab) return;
-           if (!confirm(`「${targetTab.title}」タブのExcelを生成しますか？`)) return;
-           document.getElementById('loading').style.display = 'flex';
-           const d = targetTab.data;
-           let combinedMethod = d.paymentConditionType === "従来通り" ? "従来通り" : "従来通り以外" + (d.paymentConditionDetail ? (" " + d.paymentConditionDetail) : "");
-           const updatedHeader = { ...d.header, collectionMethod: combinedMethod };
-           const saveData = { orderNo: d.header.orderNo, mode: d.mode, header: updatedHeader, items: d.items, schedule: d.schedule, remarks: d.remarks, totals: d.totals };
-           if (typeof google !== 'undefined' && google.script) {
-            google.script.run.withSuccessHandler((res) => {
-                document.getElementById('loading').style.display = 'none';
-                if (res.success) { window.open(res.url, '_blank'); alert(res.message); } else { alert(res.message); }
-              }).withFailureHandler((err) => {
-                document.getElementById('loading').style.display = 'none'; alert("Excel生成エラー: " + err);
-              }).generateOrderSheet(saveData);
-           }
-        };
-        
-        const [addMenuOpen, setAddMenuOpen] = useState(false);
-
-        if (errorMsg) return <div className="p-10 text-center bg-red-50 min-h-screen text-red-600 font-bold"><pre>{errorMsg}</pre></div>;
-        if (loading) return null;
-
-        return (
-          <div className="min-h-screen bg-gray-200 p-6 font-sans text-base print-full print:p-0 print:bg-white text-gray-900 flex flex-col items-center pb-40">
-            <div id="tab-bar" className="w-full max-w-[1100px] flex items-end space-x-1 mb-0 print-hidden">
-               {tabs.map(tab => (
-                 <div key={tab.id} onClick={() => setActiveTabId(tab.id)} className={`px-4 py-2 rounded-t-lg font-bold text-sm cursor-pointer flex items-center border-t border-x relative group transition-colors ${activeTabId === tab.id ? 'tab-active shadow-sm -mb-px z-10' : 'tab-inactive hover:bg-gray-300'}`} style={{ height: '42px' }}>
-                    <span className="mr-2">{tab.title}</span>
-                    <button onClick={(e) => removeTab(e, tab.id)} className="text-gray-400 hover:text-red-500 rounded-full p-0.5"><X className="w-3 h-3" /></button>
-                 </div>
-               ))}
-               <div className="relative">
-                 <button onClick={() => setAddMenuOpen(!addMenuOpen)} className="px-3 py-2 bg-gray-600 text-white rounded-t-lg hover:bg-gray-700 transition-colors flex items-center h-[42px] font-bold text-xs"><Plus className="w-4 h-4 mr-1" /> 追加</button>
-                 {addMenuOpen && (
-                   <div className="absolute top-10 left-0 bg-white shadow-xl rounded border border-gray-300 w-32 z-50 overflow-hidden">
-                      <button onClick={() => { addNewTab('sales'); setAddMenuOpen(false); }} className="block w-full text-left px-4 py-2 hover:bg-blue-50 text-sm">販売</button>
-                      <button onClick={() => { addNewTab('rental'); setAddMenuOpen(false); }} className="block w-full text-left px-4 py-2 hover:bg-green-50 text-sm">レンタル</button>
-                      <button onClick={() => { addNewTab('communication'); setAddMenuOpen(false); }} className="block w-full text-left px-4 py-2 hover:bg-purple-50 text-sm">通信費</button>
-                   </div>
-                 )}
-               </div>
-            </div>
-            {tabs.map(tab => (
-              <SingleOrderSheet key={tab.id} tabId={tab.id} data={tab.data} isActive={activeTabId === tab.id} onChange={(newData) => handleTabChange(tab.id, newData)} onSave={handleSave} onExportExcel={handleExportExcel} allTabs={tabs} saveStatus={saveStatus} />
-            ))}
-          </div>
-        );
-      }
       const root = ReactDOM.createRoot(document.getElementById("root"));
       root.render(<App />);
     </script>
