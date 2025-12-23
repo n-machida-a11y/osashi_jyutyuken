@@ -117,6 +117,8 @@
       const X = ({ className }) => <IconWrapper className={className}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></IconWrapper>;
       const Clock = ({ className }) => <IconWrapper className={className}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></IconWrapper>;
       const Send = ({ className }) => <IconWrapper className={className}><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></IconWrapper>;
+      const CheckCircle = ({ className }) => <IconWrapper className={className}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></IconWrapper>;
+      const AlertTriangle = ({ className }) => <IconWrapper className={className}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></IconWrapper>;
 
       // GASパラメータ安全受け取り
       let INITIAL_ORDER_NO = "";
@@ -136,33 +138,34 @@
       const generateId = () => crypto.randomUUID();
       const safeText = (val) => (val === undefined || val === null) ? '' : String(val);
 
-      // --- 数値入力コンポーネント（3桁区切り対応） ---
-      const NumberInput = ({ value, onChange, className, placeholder, readOnly, textAlign = 'right' }) => {
+      // --- 数値入力コンポーネント（3桁区切り対応 + マスキング機能） ---
+      const NumberInput = ({ value, onChange, className, placeholder, readOnly, textAlign = 'right', isMasked = false }) => {
         const [isFocused, setIsFocused] = useState(false);
         const displayValue = useMemo(() => {
-          if (isFocused) return value; // フォーカス時は生の値を表示
+          if (isMasked) return '0'; // ★仮状態なら0表示
+          if (isFocused) return value; 
           if (value === '' || value === null || value === undefined) return '';
           const num = Number(value);
           if (isNaN(num)) return value;
-          return num.toLocaleString(); // フォーカス外はカンマ区切り
-        }, [value, isFocused]);
+          return num.toLocaleString(); 
+        }, [value, isFocused, isMasked]);
 
         return (
           <input
             type="text"
-            className={`${className} text-${textAlign}`}
+            className={`${className} text-${textAlign} ${isMasked ? 'text-gray-300' : ''}`}
             value={displayValue}
             onChange={(e) => {
-               // 全角数字を半角に、カンマを除去して数値のみにする
+               if (isMasked) return; // マスク時は入力不可(または警告)
                let v = e.target.value.replace(/,/g, '').replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
                if (v === '' || !isNaN(Number(v))) {
                  onChange(v);
                }
             }}
-            onFocus={() => !readOnly && setIsFocused(true)}
+            onFocus={() => !readOnly && !isMasked && setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             placeholder={placeholder}
-            readOnly={readOnly}
+            readOnly={readOnly || isMasked}
           />
         );
       };
@@ -173,6 +176,10 @@
         
         const [isIndefinite, setIsIndefinite] = useState(false);
         const [shippingRowCount, setShippingRowCount] = useState(3);
+        const [showMergeModal, setShowMergeModal] = useState(false); 
+
+        // ★ステータス判定: 'temporary' なら金額をマスクする
+        const isTemporary = header.dataStatus === 'temporary';
 
         useEffect(() => {
           let maxIdx = 3;
@@ -352,20 +359,46 @@
         // 原価計（販売モード用）
         const costTotal = items.reduce((sum, item) => sum + (Number(item.costAmount) || 0), 0);
 
-        // ★Grid Columns調整: 原価金額対応
+        // ★Grid Columns調整: 出荷チェック列削除
+        // 品名(1fr), 規格(100), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80)
         let gridColsClass = 'grid-cols-[30px_1fr_60px_50px_50px_80px_80px_80px_1fr]';
         
         if (mode === 'sales') {
-            // 操作(30), 品名(1fr), 規格(100), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80)
-            // 備考なし
             gridColsClass = 'grid-cols-[30px_1fr_100px_50px_50px_80px_80px_80px]'; 
         } else if (mode === 'rental' || mode === 'communication') {
-            // 操作(30), 品名(1fr), 数量(50), 単位(50), 単価(80), 金額(80), 原価金額(80), 備考(1fr)
-            // 規格なし
             gridColsClass = 'grid-cols-[30px_1fr_50px_50px_80px_80px_80px_1fr]';
         }
 
+        // ★Grid Columns調整: 請求スケジュールのチェック列を復活
         const gridColsSchedule = 'grid-cols-[30px_3rem_4rem_7rem_6rem_4rem_6rem_1fr_3rem]';
+
+        // ★ステータス選択UI
+        const StatusSelector = ({ status, onChange }) => {
+            const getLabel = (s) => {
+                if (s === 'replacement') return '差替';
+                if (s === 'temporary') return '仮';
+                if (s === 'merged') return '統合済';
+                return '通常(本番)';
+            };
+            return (
+              <div className="flex items-center space-x-1 bg-gray-100 p-1 rounded border border-gray-300">
+                 <select value={status} onChange={(e) => onChange(e.target.value)} className="bg-transparent text-xs font-bold outline-none cursor-pointer">
+                    <option value="official">通常(本番)</option>
+                    <option value="temporary">【仮】(金額0)</option>
+                    <option value="replacement">【差替】</option>
+                    <option value="merged" disabled>統合済</option>
+                 </select>
+                 {status === 'merged' && <span className="text-gray-500 text-[10px]">(アーカイブ)</span>}
+              </div>
+            );
+        };
+
+        const handleMergeSubmit = () => {
+            if (!header.mergeTargetOrderNo) { alert("統合先の受注Noを入力してください。"); return; }
+            if (!confirm(`このデータを「統合済」に変更し、\n統合先: ${header.mergeTargetOrderNo} として記録しますか？\n(一覧から見えなくなる場合があります)`)) return;
+            updateHeader('dataStatus', 'merged');
+            setShowMergeModal(false);
+        };
 
         return (
           <div className={`w-full max-w-[1100px] print-full ${!isActive ? 'hidden' : ''}`}>
@@ -374,6 +407,12 @@
                   <div className="flex flex-col">
                     <span className={`font-bold ${titleColor} flex items-center text-lg`}>【{modeLabel}】</span>
                     <span className="text-xs text-gray-500">受注No: {header.orderNo}</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                     <StatusSelector status={header.dataStatus} onChange={(val) => updateHeader('dataStatus', val)} />
+                     {header.dataStatus === 'temporary' && (
+                         <button onClick={() => setShowMergeModal(true)} className="text-xs bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1 text-gray-600 ml-2">本番統合(消込)</button>
+                     )}
                   </div>
                 </div>
                 <div className="flex items-center space-x-3">
@@ -389,6 +428,24 @@
                 </div>
               </div>
 
+              {/* 統合モーダル */}
+              {showMergeModal && (
+                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 print-hidden">
+                      <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                          <h3 className="font-bold text-lg mb-4 flex items-center"><AlertTriangle className="w-5 h-5 text-yellow-500 mr-2"/>データ統合（消込）</h3>
+                          <p className="text-sm text-gray-600 mb-4">この仮データを本番データに取り込み済みとしてマークします。<br/>統合先の正式な受注Noを入力してください。</p>
+                          <div className="mb-4">
+                              <label className="block text-xs font-bold text-gray-700 mb-1">統合先受注No</label>
+                              <input className="w-full border border-gray-300 rounded p-2" value={header.mergeTargetOrderNo || ''} onChange={e => updateHeader('mergeTargetOrderNo', e.target.value)} placeholder="例: 2400123" />
+                          </div>
+                          <div className="flex justify-end space-x-2">
+                              <button onClick={() => setShowMergeModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">キャンセル</button>
+                              <button onClick={handleMergeSubmit} className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded">実行</button>
+                          </div>
+                      </div>
+                  </div>
+              )}
+
               <div className="bg-white p-10 shadow-2xl print-full print:p-0 text-sm leading-relaxed border border-gray-300 print:border-none relative min-h-[1300px]">
                 <div className="absolute top-6 right-6 text-xs text-gray-400">{safeText(header.formId)}</div>
                 <div className="flex justify-between items-start mb-6">
@@ -396,6 +453,9 @@
                     <div className="flex items-end space-x-4 mb-4">
                       <h1 className="text-3xl font-serif font-bold tracking-widest border-b-4 border-double border-black pb-1 inline-block">
                         {mode === 'rental' ? 'レンタル受注兼発送依頼書' : (mode === 'communication' ? '通信費 受注兼発送依頼書' : '受注兼発送依頼書')}
+                        {/* ★タイトルへのステータス追記 */}
+                        {header.dataStatus === 'temporary' && <span className="text-red-600 ml-2">【仮】</span>}
+                        {header.dataStatus === 'replacement' && <span className="text-red-600 ml-2">【差替】</span>}
                       </h1>
                       <div className="flex flex-col text-sm font-bold text-red-600 mb-1">
                         {header.tag && <span>{safeText(header.tag)}</span>}
@@ -476,7 +536,7 @@
                     <div className="border-b border-black p-3">
                       <div className="flex justify-between items-start mb-1">
                         <div className="text-xs bg-label px-3 py-0.5 rounded font-bold border border-gray-300">社名</div>
-                        <div className="text-xs text-gray-400">Code: {safeText(header.customerCode)}</div>
+                        {/* 削除: 得意先コード */}
                       </div>
                       <div className="px-2">
                         <input className="font-bold text-xl leading-tight w-full outline-none bg-transparent" value={header.customerName || ''} onChange={e => updateHeader('customerName', e.target.value)} placeholder="得意先名" />
@@ -505,7 +565,6 @@
                       </div>
                     </div>
                     <div className="p-3 flex justify-between items-center bg-gray-50 h-16">
-                       {/* 既存の社名エリアの先方担当者はそのままにするか、要検討だが「直送先」横に移動が目的ならここは空けるか、営業担当だけ残す */}
                        <div className="flex items-center gap-2 w-full"><span className="text-xs bg-label px-2 py-1 rounded font-bold border border-gray-300 whitespace-nowrap">営業担当</span><input className="font-bold border-b border-gray-300 px-2 w-full text-base bg-transparent outline-none" value={header.salesRepInternalMain || ''} onChange={e => updateHeader('salesRepInternalMain', e.target.value)} /></div>
                     </div>
                   </div>
@@ -614,6 +673,7 @@
                   {/* 明細グリッド: gridColsClass で列制御 */}
                   <div className={`grid ${gridColsClass} bg-label border-b border-black text-center font-bold py-2 text-sm`}>
                     <div className="text-[10px] text-gray-500">操作</div>
+                    
                     <div className="border-l border-black border-r">品 名</div>
                     {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black">規格</div>}
                     <div className="border-r border-black">数量</div><div className="border-r border-black">単位</div><div className="border-r border-black">単価</div><div className="border-r border-black">金額</div>
@@ -624,17 +684,21 @@
                     <div key={row.id} className={`relative grid ${gridColsClass} border-b border-black last:border-none text-sm min-h-[32px] group`}>
                       <div className="flex items-center justify-center relative"><div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 print-hidden"><button onClick={() => deleteItem(i)} className="text-gray-300 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div></div>
                       
-                      <div className="border-l border-black border-r p-1 pl-3"><input className="w-full bg-transparent outline-none font-medium" value={row.productName || ''} onChange={e => updateItem(i, 'productName', e.target.value)} /></div>
+                      <div className="border-l border-black border-r p-1 pl-3 flex flex-col justify-center">
+                          <input className="w-full bg-transparent outline-none font-medium" value={row.productName || ''} onChange={e => updateItem(i, 'productName', e.target.value)} />
+                          {row.shippedDate && <span className="text-[9px] text-green-600 font-bold block leading-none print-hidden">出荷日: {row.shippedDate}</span>}
+                      </div>
                       
                       {/* 規格: 販売モードのみ */}
                       {(mode !== 'rental' && mode !== 'communication') && <div className="border-r border-black p-1"><input className="w-full bg-transparent outline-none text-center" value={row.spec || ''} onChange={e => updateItem(i, 'spec', e.target.value)} /></div>}
                       
+                      {/* ★【仮】のときは金額系を0表示 (isMasked) */}
                       <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.quantity || ''} onChange={e => updateItem(i, 'quantity', e.target.value)} /></div>
                       <div className="border-r border-black p-1"><input className="w-full text-center bg-transparent outline-none" value={row.unit || ''} onChange={e => updateItem(i, 'unit', e.target.value)} /></div>
-                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.unitPrice || ''} onChange={e => updateItem(i, 'unitPrice', e.target.value)} /></div>
-                      <div className={`border-r border-black p-1 px-2 text-right font-mono font-bold`}>{row.amount ? Number(row.amount).toLocaleString() : ''}</div>
+                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono" value={row.unitPrice || ''} onChange={e => updateItem(i, 'unitPrice', e.target.value)} isMasked={isTemporary} /></div>
+                      <div className={`border-r border-black p-1 px-2 text-right font-mono font-bold`}>{isTemporary ? '0' : (row.amount ? Number(row.amount).toLocaleString() : '')}</div>
                       
-                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono text-xs" value={row.costAmount || ''} onChange={e => updateItem(i, 'costAmount', e.target.value)} placeholder="-" /></div>
+                      <div className="border-r border-black p-1"><NumberInput className="w-full bg-transparent outline-none font-mono text-xs" value={row.costAmount || ''} onChange={e => updateItem(i, 'costAmount', e.target.value)} placeholder="-" isMasked={isTemporary} /></div>
 
                       {(mode !== 'sales') && <div className="p-1 border-r border-black"><input className="w-full bg-transparent outline-none" value={row.note || ''} onChange={e => updateItem(i, 'note', e.target.value)} /></div>}
                     </div>
@@ -655,28 +719,28 @@
                     {mode === 'sales' ? (
                       <div className="bg-gray-50 p-2 flex flex-col items-end pr-4">
                         <div className="flex space-x-6 items-center">
-                          <div className="flex items-center"><span className="text-xs font-bold mr-2">小計</span><span className="font-mono text-base">{totals.subtotal.toLocaleString()}</span></div>
-                          <div className="flex items-center"><span className="text-xs font-bold mr-2">消費税</span><span className="font-mono text-base">{totals.tax.toLocaleString()}</span></div>
-                          <div className="flex items-center"><span className="text-sm font-bold mr-2">合計</span><span className="font-mono text-xl font-bold">{totals.total.toLocaleString()} 円</span></div>
+                          <div className="flex items-center"><span className="text-xs font-bold mr-2">小計</span><span className="font-mono text-base">{isTemporary ? '0' : totals.subtotal.toLocaleString()}</span></div>
+                          <div className="flex items-center"><span className="text-xs font-bold mr-2">消費税</span><span className="font-mono text-base">{isTemporary ? '0' : totals.tax.toLocaleString()}</span></div>
+                          <div className="flex items-center"><span className="text-sm font-bold mr-2">合計</span><span className="font-mono text-xl font-bold">{isTemporary ? '0' : totals.total.toLocaleString()} 円</span></div>
                         </div>
                         {/* ★販売モードのみ: 原価計を追加 */}
                         <div className="flex items-center mt-1 pt-1 border-t border-gray-300 w-48 justify-end">
-                            <span className="text-xs text-gray-500 mr-2">原価計</span><span className="font-mono text-sm">{costTotal.toLocaleString()} 円</span>
+                            <span className="text-xs text-gray-500 mr-2">原価計</span><span className="font-mono text-sm">{isTemporary ? '0' : costTotal.toLocaleString()} 円</span>
                         </div>
                       </div>
                     ) : (
                       <div className="bg-yellow-50">
                           <div className="p-2 flex justify-end items-center space-x-6 pr-4 border-b border-gray-300">
                               <span className="font-bold text-gray-700 mr-auto pl-2">【初回ご請求】</span>
-                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">小計</span><span className="font-mono">{totals.subtotal.toLocaleString()}</span></div>
-                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">消費税</span><span className="font-mono">{totals.tax.toLocaleString()}</span></div>
-                              <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{totals.total.toLocaleString()} 円</span></div>
+                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">小計</span><span className="font-mono">{isTemporary ? '0' : totals.subtotal.toLocaleString()}</span></div>
+                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">消費税</span><span className="font-mono">{isTemporary ? '0' : totals.tax.toLocaleString()}</span></div>
+                              <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{isTemporary ? '0' : totals.total.toLocaleString()} 円</span></div>
                           </div>
                           <div className="p-2 flex justify-end items-center space-x-6 pr-4">
                               <span className="font-bold text-gray-700 mr-auto pl-2">【2回目以降 (月額)】 <span className="text-[10px] font-normal text-gray-500">※送料除く</span></span>
-                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">小計</span><span className="font-mono">{itemsTotal.toLocaleString()}</span></div>
-                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">消費税</span><span className="font-mono">{monthlyTax.toLocaleString()}</span></div>
-                              <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{monthlyTotal.toLocaleString()} 円</span></div>
+                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">小計</span><span className="font-mono">{isTemporary ? '0' : itemsTotal.toLocaleString()}</span></div>
+                              <div className="flex items-center"><span className="text-xs text-gray-500 mr-2">消費税</span><span className="font-mono">{isTemporary ? '0' : monthlyTax.toLocaleString()}</span></div>
+                              <div className="flex items-center"><span className="text-xs font-bold mr-2">合計</span><span className="font-mono text-lg font-bold">{isTemporary ? '0' : monthlyTotal.toLocaleString()} 円</span></div>
                           </div>
                       </div>
                     )}
@@ -708,14 +772,14 @@
                       
                       return (
                         <div key={row.id} className={`grid ${gridColsSchedule} border-b border-black last:border-none text-sm min-h-[32px] group`}>
-                          <div className="flex items-center justify-center relative"><div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 print-hidden"><button onClick={() => removeScheduleRow(i)} className="text-gray-300 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div></div>
+                          <div className="flex items-center justify-center relative"><div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 print-hidden"><button onClick={() => removeScheduleRow(i)} className="text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></div></div>
                           <div className="border-l border-black border-r p-1 text-center font-bold"><input className="w-full bg-transparent outline-none text-center" value={row.count || ''} onChange={e => updateSchedule(i, 'count', e.target.value)} placeholder={`${i+1}回目`} /></div>
                           <div className="border-r border-black p-1 text-center">
                              <input className={`w-full bg-transparent outline-none text-center font-mono ${mode==='communication'?'text-gray-400':''}`} value={row.billingDate || ''} onChange={e => updateSchedule(i, 'billingDate', e.target.value)} readOnly={mode==='communication'} placeholder="MM/DD" />
                           </div>
                           <div className="border-r border-black p-1 text-right">
-                             {/* ★金額系: カンマ区切り */}
-                             <NumberInput className="w-full bg-transparent outline-none font-mono" value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} />
+                             {/* ★金額系: カンマ区切り + 仮マスク */}
+                             <NumberInput className="w-full bg-transparent outline-none font-mono" value={mode === 'sales' ? (row.amount || '') : (row.costReference || '')} onChange={e => updateSchedule(i, mode === 'sales' ? 'amount' : 'costReference', e.target.value)} isMasked={isTemporary} />
                           </div>
                           <div className="border-r border-black p-1 text-center">
                              <input className={`w-full bg-transparent outline-none text-center font-mono ${mode==='communication'?'text-gray-400':''}`} value={row.slipNo || ''} onChange={e => updateSchedule(i, 'slipNo', e.target.value)} readOnly={mode==='communication'} />
